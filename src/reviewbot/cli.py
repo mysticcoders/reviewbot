@@ -1,0 +1,338 @@
+"""ReviewBot command line: GitHub review queue to interactive Herdr agents."""
+
+from __future__ import annotations
+
+import asyncio
+import shutil
+import subprocess
+from importlib import resources
+from pathlib import Path
+
+import click
+from rich.console import Console
+from rich.table import Table
+
+from . import __version__
+from . import config as cfg
+from .github import GhError, ReviewCandidate, authored_prs, review_queue
+from .herdr import LaunchError, active_review_keys, launch_review
+
+
+def _resource_text(name: str) -> str:
+    return (resources.files("reviewbot") / "_resources" / name).read_text(encoding="utf-8")
+
+
+def _write_if_absent(target: Path, content: str, *, force: bool) -> bool:
+    if target.exists() and not force:
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return True
+
+
+def _load(watch: tuple[str, ...] = (), watch_all: bool = False) -> cfg.Config:
+    """Load the config file, letting `--watch`/`--all` replace its configured scope."""
+    try:
+        config = cfg.load()
+        if watch_all:
+            return config.with_scope(cfg.Scope())
+        if watch:
+            return config.with_scope(cfg.Scope.parse(watch))
+        return config
+    except cfg.ConfigError as error:
+        raise click.ClickException(str(error)) from None
+
+
+def scope_options(command):
+    """Add `--watch` and `--all` scope overrides to a command."""
+    command = click.option(
+        "--all", "watch_all", is_flag=True,
+        help="Watch every repository you can access, ignoring the configured scope.",
+    )(command)
+    return click.option(
+        "-w", "--watch", multiple=True, metavar="OWNER[/REPO]",
+        help="Watch this owner or repository instead of the configured scope (repeatable).",
+    )(command)
+
+
+def _queue(config: cfg.Config) -> list[ReviewCandidate]:
+    try:
+        return asyncio.run(review_queue(config.scope))
+    except (GhError, OSError) as error:
+        raise click.ClickException(f"GitHub query failed: {error}") from None
+
+
+def _print_candidate(candidate: ReviewCandidate) -> None:
+    console = Console()
+    console.print(f"[bold]{candidate.key}[/bold] — {candidate.title}")
+    console.print(
+        f"  {candidate.status.value} · {candidate.request_source} request · "
+        f"checks {candidate.checks} · @{candidate.author}"
+    )
+    if candidate.last_review_state:
+        console.print(
+            f"  previous {candidate.last_review_state.lower()} at "
+            f"{(candidate.last_review_sha or '')[:7]} · "
+            f"{candidate.commits_since_review} newer commit(s)"
+        )
+    console.print(f"  {candidate.url}")
+
+
+def _require_agent(config: cfg.Config, agent: str) -> None:
+    try:
+        config.resolve(agent)
+    except cfg.ConfigError as error:
+        raise click.ClickException(str(error)) from None
+
+
+def _do_launch(config: cfg.Config, candidate: ReviewCandidate, agent: str) -> None:
+    try:
+        results = launch_review(config, candidate, agent=agent)
+    except LaunchError as error:
+        raise click.ClickException(str(error)) from None
+    for result in results:
+        click.secho(
+            f"started {result.agent} in Herdr tab `{result.tab_label}` ({result.checkout})",
+            fg="green",
+        )
+
+
+@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(__version__, prog_name="reviewbot")
+def cli() -> None:
+    """Review requested PRs interactively with your configured agents in Herdr."""
+
+
+def _toml_list(values: list[str] | tuple[str, ...]) -> str:
+    return "[" + ", ".join(f'"{value}"' for value in values) + "]"
+
+
+def _agent_spec(spec: str) -> tuple[str, str | None]:
+    """Split an `init --agent KIND[:KEY]` value."""
+    kind, _, key = spec.partition(":")
+    if not cfg.NAME_PATTERN.fullmatch(kind) or (key and not cfg.KEY_PATTERN.fullmatch(key)):
+        raise click.BadParameter(f"`{spec}` must be KIND or KIND:KEY, e.g. claude:c")
+    return kind, key or None
+
+
+def render_config(scope: cfg.Scope, agents: list[tuple[str, str | None]]) -> str:
+    """Build a starter config.toml for the given watch scope and agents."""
+    entries = ["*"] if scope.is_all else [*scope.owners, *scope.repos]
+    agent_blocks = "\n".join(
+        f'[[agents]]\nname = "{kind}"\nkind = "{kind}"\n'
+        + (f'key = "{key}"\n' if key else "")
+        for kind, key in agents
+    ) or (
+        "# [[agents]]\n"
+        '# name = "claude"        # used with --agent and in Herdr tab names\n'
+        '# kind = "claude"        # any `herdr agent start --kind` value\n'
+        '# key = "c"              # TUI shortcut (single letter or digit)\n'
+        '# args = ["--model", "opus"]   # extra arguments for the agent CLI\n'
+        '# prompt = "claude.md"   # overrides the top-level prompt\n'
+    )
+    return _resource_text("config.example.toml").replace(
+        "@WATCH@", _toml_list(entries)
+    ).replace("@AGENTS@\n", agent_blocks)
+
+
+@cli.command()
+@click.option("--force", is_flag=True, help="Overwrite existing config and prompt files.")
+@click.option(
+    "-w", "--watch", multiple=True, metavar="OWNER[/REPO]",
+    help="Owner or repository to watch (repeatable); `*` watches everything.",
+)
+@click.option(
+    "--agent", "agent_specs", multiple=True, metavar="KIND[:KEY]",
+    help="Add a review agent of this Herdr kind, with an optional TUI key (repeatable).",
+)
+def init(force: bool, watch: tuple[str, ...], agent_specs: tuple[str, ...]) -> None:
+    """Write ~/.config/reviewbot/config.toml and the review prompt it points at."""
+    if not watch:
+        answer = click.prompt(
+            "Owners or OWNER/REPO entries to watch (comma-separated, * for everything)"
+        )
+        watch = tuple(item for item in answer.replace(",", " ").split() if item)
+    try:
+        scope = cfg.Scope.parse(watch)
+    except cfg.ConfigError as error:
+        raise click.ClickException(str(error)) from None
+    agents = [_agent_spec(spec) for spec in agent_specs]
+    for target, content in (
+        (cfg.CONFIG_PATH, render_config(scope, agents)),
+        (cfg.CONFIG_PATH.parent / "review.md", _resource_text("review.md")),
+    ):
+        written = _write_if_absent(target, content, force=force)
+        click.secho(
+            f"{'wrote' if written else 'exists'} {target}", fg="green" if written else "yellow",
+        )
+    try:
+        cfg.load(cfg.CONFIG_PATH)
+    except cfg.ConfigError as error:
+        raise click.ClickException(f"{cfg.CONFIG_PATH} is invalid: {error}") from None
+    if not agents:
+        click.echo(f"Add [[agents]] entries to {cfg.CONFIG_PATH} to launch reviews.")
+
+
+def _check(label: str, ok: bool, detail: str) -> bool:
+    mark = click.style(f"{'ok' if ok else 'missing':<8}", fg="green" if ok else "red")
+    click.echo(f"{mark} {label}: {detail}")
+    return ok
+
+
+@cli.command()
+def doctor() -> None:
+    """Check that gh, git, Herdr, the config, and each configured agent are ready."""
+    required = []
+    for tool in ("gh", "git", "herdr"):
+        path = shutil.which(tool)
+        required.append(_check(tool, bool(path), path or "not on PATH"))
+    if shutil.which("gh"):
+        auth = subprocess.run(
+            ["gh", "auth", "status"], capture_output=True, text=True, check=False
+        )
+        required.append(_check(
+            "gh auth", auth.returncode == 0,
+            "authenticated" if auth.returncode == 0 else "run `gh auth login`",
+        ))
+    try:
+        config = cfg.load()
+    except cfg.ConfigError as error:
+        required.append(_check("config", False, str(error)))
+        raise click.ClickException("setup incomplete") from None
+    required.append(_check(
+        "config", True, f"{config.path} · watching {config.scope.describe()}",
+    ))
+    if not config.agents:
+        required.append(_check("agents", False, "no [[agents]] configured"))
+    for agent in config.agents:
+        path = shutil.which(agent.kind)
+        required.append(_check(
+            f"agent {agent.name}", bool(path),
+            path or f"`{agent.kind}` not on PATH",
+        ))
+        required.append(_check(
+            f"agent {agent.name} prompt", agent.prompt.is_file(), str(agent.prompt),
+        ))
+    if not all(required):
+        raise click.ClickException("setup incomplete")
+
+
+@cli.command("agents")
+def agents_command() -> None:
+    """List the configured review agents, groups, and their TUI keys."""
+    config = _load()
+    table = Table(title=f"Agents in {config.path}")
+    for heading in ("Name", "Key", "Launches", "Prompt"):
+        table.add_column(heading)
+    for agent in config.agents:
+        launches = " ".join([agent.kind, *agent.args])
+        table.add_row(agent.name, agent.key or "", launches, str(agent.prompt))
+    for group in config.groups:
+        table.add_row(group.name, group.key or "", ", ".join(group.agents), "per agent")
+    Console().print(table)
+
+
+@cli.command("status")
+@scope_options
+def status_command(watch: tuple[str, ...], watch_all: bool) -> None:
+    """List PRs currently requesting your review."""
+    config = _load(watch, watch_all)
+    candidates = _queue(config)
+    active = active_review_keys(candidates)
+    table = Table(title=f"Review requests in {config.scope.describe()}")
+    for heading in ("Status", "PR", "Checks", "Request", "Author", "Title"):
+        table.add_column(heading)
+    for candidate in candidates:
+        short_key = f"{config.scope.label(candidate.repo)}#{candidate.number}"
+        table.add_row(
+            "in-progress" if candidate.key in active else candidate.status.value,
+            short_key, candidate.checks,
+            candidate.request_source, f"@{candidate.author}", candidate.title,
+        )
+    Console().print(table)
+    actionable = sum(candidate.actionable for candidate in candidates)
+    click.echo(f"{actionable} actionable of {len(candidates)} current request(s)")
+
+
+@cli.command("mine")
+@scope_options
+def mine_command(watch: tuple[str, ...], watch_all: bool) -> None:
+    """List your open PRs with review, check, and reviewer status."""
+    config = _load(watch, watch_all)
+    try:
+        prs = asyncio.run(authored_prs(config.scope))
+    except (GhError, OSError) as error:
+        raise click.ClickException(f"GitHub query failed: {error}") from None
+    table = Table(title=f"Your open PRs in {config.scope.describe()}")
+    for heading in ("Status", "PR", "Checks", "Reviewers", "Title"):
+        table.add_column(heading)
+    for pr in prs:
+        reviewers = "\n".join(f"{r.name} ({r.label})" for r in pr.reviewers) or "none"
+        table.add_row(
+            pr.status.value, f"{config.scope.label(pr.repo)}#{pr.number}",
+            pr.checks, reviewers, pr.title,
+        )
+    Console().print(table)
+    needing = sum(bool(pr.rerequest_targets) for pr in prs)
+    click.echo(f"{len(prs)} open PR(s) · {needing} with reviewers to re-request")
+
+
+@cli.command("next")
+@scope_options
+@click.option("--agent", default=None, help="Agent or group to offer to launch.")
+@click.option("--yes", is_flag=True, help="Launch without asking for confirmation.")
+def next_command(
+    agent: str | None, yes: bool, watch: tuple[str, ...], watch_all: bool
+) -> None:
+    """Show the next actionable PR and optionally launch its review."""
+    config = _load(watch, watch_all)
+    if agent is not None:
+        _require_agent(config, agent)
+    queue = _queue(config)
+    active = active_review_keys(queue)
+    candidates = [
+        candidate for candidate in queue
+        if candidate.actionable and candidate.key not in active
+    ]
+    if not candidates:
+        click.echo("No actionable review requests.")
+        return
+    candidate = candidates[0]
+    _print_candidate(candidate)
+    if agent is None:
+        names = ", ".join(config.target_names) or "none configured"
+        click.echo(f"Pass --agent to launch it (agents: {names}).")
+        return
+    if yes or click.confirm(f"Launch {agent} in a new Herdr tab?"):
+        _do_launch(config, candidate, agent)
+
+
+@cli.command("launch")
+@click.argument("target")
+@click.option("--agent", required=True, help="Agent or group name from the config.")
+def launch_command(target: str, agent: str) -> None:
+    """Launch a requested PR, identified as OWNER/REPO#NUMBER or its URL."""
+    normalized = target.removeprefix("https://github.com/").replace("/pull/", "#").rstrip("/")
+    repo, _, number = normalized.partition("#")
+    if repo.count("/") != 1 or not number.isdigit():
+        raise click.ClickException(f"{target} is not OWNER/REPO#NUMBER or a PR URL")
+    config = _load((repo,))
+    _require_agent(config, agent)
+    candidate = next((item for item in _queue(config) if item.key == normalized), None)
+    if candidate is None:
+        raise click.ClickException(f"{target} is not in your current review-request queue")
+    _print_candidate(candidate)
+    _do_launch(config, candidate, agent)
+
+
+@cli.command("tui")
+@scope_options
+def tui_command(watch: tuple[str, ...], watch_all: bool) -> None:
+    """Open an interactive picker for the current review-request queue."""
+    from .tui.app import run_tui
+
+    run_tui(_load(watch, watch_all))
+
+
+if __name__ == "__main__":
+    cli()

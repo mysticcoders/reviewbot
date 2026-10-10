@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "reviewbot-site",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./public"
+  },
+  "routes": [
+    { "pattern": "reviewbot.wecodefire.com", "custom_domain": true }
+  ]
+}

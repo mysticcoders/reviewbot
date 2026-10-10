@@ -1,0 +1,36 @@
+# ReviewBot configuration. GitHub is the source of truth; Herdr hosts the agents.
+
+# Which repositories to watch for review requests and your own open PRs.
+#   ["*"]                       every repository you can access
+#   ["acme"]                    every repository owned by an org or user
+#   ["acme/api", "acme/web"]    only these repositories
+#   ["acme", "someone/tool"]    mix owners and individual repositories
+# Any command accepts `--watch OWNER[/REPO]` (repeatable) or `--all` to override this.
+watch = @WATCH@
+
+# Where ReviewBot keeps cached clones and per-PR worktrees.
+work_dir = "~/reviewbot-workspaces"
+
+# Prompt sent to every agent that does not set its own `prompt`. Relative
+# paths resolve against this file's directory. See README for placeholders.
+prompt = "review.md"
+
+# Optional: force new tabs into a particular Herdr workspace ID.
+# When omitted, Herdr uses the currently focused workspace.
+# herdr_workspace = "workspace-id"
+
+# Review agents. Each one becomes a TUI shortcut and an `--agent` name.
+@AGENTS@
+
+# Optional: launch several agents on the same PR with one key.
+# [[groups]]
+# name = "pair"
+# agents = ["claude", "codex"]
+# key = "b"
+
+# Optional: reuse existing local clones instead of cloning into work_dir.
+# ReviewBot only adds detached worktrees and fetches PR refs; it never
+# touches the clone's checked-out branch.
+# [[checkouts]]
+# repo = "acme/api"
+# path = "~/code/api"

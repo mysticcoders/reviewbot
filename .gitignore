@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.wrangler/
+node_modules/
+.claude/settings.local.json

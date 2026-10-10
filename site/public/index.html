@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReviewBot</title>
+<meta name="description" content="A terminal UI for your GitHub review queue. Check out any PR at its exact head and hand it to Claude Code, Codex, or any agent Herdr can run, with your own review prompt.">
+<meta property="og:title" content="ReviewBot: your review queue, handed to your agents">
+<meta property="og:description" content="A terminal UI for your GitHub review queue. One key checks out the PR and starts the review agent of your choice in Herdr.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://reviewbot.wecodefire.com/">
+<meta property="og:image" content="https://reviewbot.wecodefire.com/tui.svg">
+<meta name="theme-color" content="#16120f">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #faf7f3;
+  --surface: #ffffff;
+  --surface-2: #f2ece5;
+  --text: #1d1915;
+  --muted: #6b6159;
+  --border: #e4dbd1;
+  --accent: #e2620a;
+  --accent-ink: #ffffff;
+  --accent-soft: #fde7d6;
+  --code-bg: #16120f;
+  --code-text: #f4ede6;
+  --code-muted: #a39488;
+  --code-key: #ff9a4d;
+  --code-str: #b8d98a;
+  --shadow: 0 1px 2px rgba(29, 25, 21, .06), 0 12px 32px rgba(29, 25, 21, .08);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #110e0c;
+    --surface: #1a1613;
+    --surface-2: #221d19;
+    --text: #f4ede6;
+    --muted: #a99d92;
+    --border: #2f2823;
+    --accent: #ff7a1a;
+    --accent-ink: #1a0d03;
+    --accent-soft: #3a2010;
+    --code-bg: #0b0908;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 16px 40px rgba(0, 0, 0, .35);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #110e0c;
+  --surface: #1a1613;
+  --surface-2: #221d19;
+  --text: #f4ede6;
+  --muted: #a99d92;
+  --border: #2f2823;
+  --accent: #ff7a1a;
+  --accent-ink: #1a0d03;
+  --accent-soft: #3a2010;
+  --code-bg: #0b0908;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 16px 40px rgba(0, 0, 0, .35);
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 17px/1.6 "IBM Plex Sans", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; }
+code, pre, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+@media (min-width: 720px) { .wrap { padding: 0 32px; } }
+
+header.nav {
+  position: sticky; top: 0; z-index: 10;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; gap: 16px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; text-decoration: none; letter-spacing: -.01em; }
+.brand img { width: 26px; height: 26px; }
+.nav-links { display: flex; align-items: center; gap: 22px; font-size: 15px; }
+.nav-links a { text-decoration: none; color: var(--muted); }
+.nav-links a:hover { color: var(--text); }
+.nav-links .hide-sm { display: none; }
+@media (min-width: 720px) { .nav-links .hide-sm { display: inline; } }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 18px; border-radius: 10px; font-weight: 600; font-size: 15px;
+  text-decoration: none; border: 1px solid var(--border); background: var(--surface); color: var(--text);
+}
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn svg { width: 18px; height: 18px; }
+
+.hero { padding: 72px 0 40px; text-align: center; }
+.eyebrow {
+  display: inline-block; font: 500 13px/1 "IBM Plex Mono", monospace; letter-spacing: .04em;
+  color: var(--accent); background: var(--accent-soft); padding: 7px 12px; border-radius: 999px; margin-bottom: 22px;
+}
+h1 {
+  font-size: clamp(36px, 6vw, 64px); line-height: 1.05; letter-spacing: -.035em;
+  margin: 0 auto 20px; max-width: 15ch; font-weight: 700;
+}
+h1 em { font-style: normal; color: var(--accent); }
+.lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 640px; margin: 0 auto 32px; }
+.cta { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-bottom: 28px; }
+
+.install {
+  display: flex; align-items: center; gap: 12px; max-width: 640px; margin: 0 auto;
+  background: var(--code-bg); color: var(--code-text); border-radius: 12px; padding: 12px 12px 12px 18px;
+  font: 400 14px/1.4 "IBM Plex Mono", monospace; text-align: left;
+}
+.install code { flex: 1; overflow-x: auto; white-space: nowrap; }
+.install .prompt { color: var(--code-muted); user-select: none; margin-right: 8px; }
+.copy {
+  flex: none; font: 500 13px "IBM Plex Mono", monospace; color: var(--code-text);
+  background: rgba(255, 255, 255, .08); border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 8px; padding: 6px 10px; cursor: pointer;
+}
+.copy:hover { background: rgba(255, 255, 255, .14); }
+
+.shot { padding: 24px 0 72px; }
+.shot figure { margin: 0; }
+.shot img {
+  display: block; width: 100%; height: auto; border-radius: 14px; box-shadow: var(--shadow);
+  background: #1c1c1c;
+}
+.shot figcaption { text-align: center; color: var(--muted); font-size: 14px; margin-top: 14px; }
+
+section { padding: 72px 0; }
+section.alt { background: var(--surface-2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.section-head { max-width: 680px; margin-bottom: 40px; }
+.section-head .kicker { font: 500 13px "IBM Plex Mono", monospace; color: var(--accent); letter-spacing: .04em; text-transform: uppercase; }
+h2 { font-size: clamp(28px, 4vw, 40px); line-height: 1.12; letter-spacing: -.025em; margin: 8px 0 14px; }
+.section-head p { color: var(--muted); margin: 0; font-size: 18px; }
+
+.steps { display: grid; gap: 20px; grid-template-columns: 1fr; counter-reset: step; }
+@media (min-width: 860px) { .steps { grid-template-columns: repeat(3, 1fr); } }
+.step { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 26px; }
+.step::before {
+  counter-increment: step; content: "0" counter(step);
+  font: 600 14px "IBM Plex Mono", monospace; color: var(--accent);
+}
+.step h3 { font-size: 20px; margin: 10px 0 8px; letter-spacing: -.01em; }
+.step p { margin: 0; color: var(--muted); font-size: 16px; }
+
+.features { display: grid; gap: 1px; grid-template-columns: 1fr; background: var(--border); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+@media (min-width: 720px) { .features { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1000px) { .features { grid-template-columns: repeat(3, 1fr); } }
+.feature { background: var(--surface); padding: 28px; }
+.feature .icon {
+  width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent); margin-bottom: 16px;
+}
+.feature .icon svg { width: 20px; height: 20px; }
+.feature h3 { font-size: 18px; margin: 0 0 6px; letter-spacing: -.01em; }
+.feature p { margin: 0; color: var(--muted); font-size: 15.5px; }
+.feature code { font-size: 14px; }
+
+.split { display: grid; gap: 40px; grid-template-columns: 1fr; align-items: start; }
+@media (min-width: 940px) { .split { grid-template-columns: 5fr 6fr; gap: 56px; } }
+.split .section-head { margin-bottom: 24px; }
+.split > *, .install-grid > * { min-width: 0; }
+.checklist { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
+.checklist li { display: grid; grid-template-columns: 22px 1fr; gap: 12px; color: var(--muted); }
+.checklist li strong { color: var(--text); font-weight: 600; }
+.checklist svg { width: 22px; height: 22px; color: var(--accent); margin-top: 2px; }
+
+pre.code {
+  margin: 0; background: var(--code-bg); color: var(--code-text); border-radius: 14px; padding: 22px 24px;
+  font-size: 14px; line-height: 1.65; overflow-x: auto; box-shadow: var(--shadow);
+}
+pre.code .c { color: var(--code-muted); }
+pre.code .k { color: var(--code-key); }
+pre.code .s { color: var(--code-str); }
+pre.code .h { color: var(--code-text); font-weight: 600; }
+.code-label { font: 500 13px "IBM Plex Mono", monospace; color: var(--muted); margin: 0 0 10px; }
+
+.install-grid { display: grid; gap: 24px; grid-template-columns: 1fr; }
+@media (min-width: 940px) { .install-grid { grid-template-columns: 1fr 1fr; } }
+.reqs { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 8px 24px; }
+.reqs dl { margin: 0; }
+.reqs .row { display: grid; grid-template-columns: 1fr; gap: 2px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.reqs .row:last-child { border-bottom: 0; }
+@media (min-width: 560px) { .reqs .row { grid-template-columns: 170px 1fr; gap: 16px; } }
+.reqs dt { font-weight: 600; }
+.reqs dd { margin: 0; color: var(--muted); font-size: 15.5px; }
+.reqs a { color: var(--accent); }
+
+.guarantee {
+  display: grid; gap: 20px; grid-template-columns: 1fr; align-items: center;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 18px; padding: 32px;
+}
+@media (min-width: 860px) { .guarantee { grid-template-columns: 1fr auto; padding: 40px 48px; } }
+.guarantee h2 { margin-top: 0; }
+.guarantee p { color: var(--muted); margin: 0; max-width: 640px; }
+
+footer { padding: 40px 0 56px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--border); }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; align-items: center; }
+footer a { color: var(--muted); }
+footer a:hover { color: var(--text); }
+.theme-toggle {
+  background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 8px;
+  padding: 6px 10px; font: inherit; cursor: pointer;
+}
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top"><img src="favicon.svg" alt="">ReviewBot</a>
+    <nav class="nav-links">
+      <a class="hide-sm" href="#how">How it works</a>
+      <a class="hide-sm" href="#agents">Agents</a>
+      <a class="hide-sm" href="#install">Install</a>
+      <a class="btn" href="https://github.com/mysticcoders/reviewbot">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <div class="wrap hero">
+    <span class="eyebrow">Open source &middot; terminal-native</span>
+    <h1>Your review queue, <em>handed to your agents.</em></h1>
+    <p class="lede">
+      ReviewBot is a terminal UI for the pull requests waiting on you. Pick one, press a key,
+      and it's checked out at its exact head commit with Claude Code, Codex, or any agent
+      Herdr can run already reviewing it, using your prompt. You read the findings. You decide
+      what gets posted.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="#install">Get started</a>
+      <a class="btn" href="https://github.com/mysticcoders/reviewbot">View on GitHub</a>
+    </div>
+    <div class="install">
+      <code><span class="prompt">$</span>uv tool install git+https://github.com/mysticcoders/reviewbot</code>
+      <button class="copy" type="button" data-copy="uv tool install git+https://github.com/mysticcoders/reviewbot">Copy</button>
+    </div>
+  </div>
+
+  <div class="wrap shot">
+    <figure>
+      <img src="tui.svg" width="1385" height="538" alt="The ReviewBot terminal UI listing six review requests across acme repositories with status, checks, request source, author, and title, and a footer offering claude, codex, and pair launch keys.">
+      <figcaption>The review queue, rendered straight from the TUI. The keys along the bottom come from your config.</figcaption>
+    </figure>
+  </div>
+
+  <section id="how" class="alt">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="kicker">How it works</span>
+        <h2>From "review requested" to a running agent in one keypress.</h2>
+        <p>GitHub stays the source of truth. ReviewBot reads it through <code>gh</code>, sets up a
+        clean workspace, and gets out of the way.</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <h3>Watch what matters</h3>
+          <p>Point it at an org, a handful of repos, or everything you can see. It lists every open
+          PR asking for your review, directly or through one of your teams, with checks and
+          what changed since your last pass.</p>
+        </div>
+        <div class="step">
+          <h3>Press a key</h3>
+          <p>ReviewBot fetches the PR, verifies the head SHA hasn't moved, and creates a detached
+          worktree at that exact commit. Your own checkouts are never touched.</p>
+        </div>
+        <div class="step">
+          <h3>Review alongside the agent</h3>
+          <p>A new Herdr tab opens with your agent running in the worktree and your review prompt
+          already sent. Ask follow-ups, run tests, then submit the review yourself.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <span class="kicker">What you get</span>
+        <h2>Built for people who review a lot of code.</h2>
+      </div>
+      <div class="features">
+        <div class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></div>
+          <h3>Watch any scope</h3>
+          <p>Whole orgs, individual repos, or a mix, with <code>--watch</code> and <code>--all</code> to change scope for a single run.</p>
+        </div>
+        <div class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg></div>
+          <h3>Bring your own agents</h3>
+          <p>Any agent kind Herdr supports, each with its own shortcut key and CLI arguments. Group them to get two independent reviews of one PR.</p>
+        </div>
+        <div class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></svg></div>
+          <h3>Your prompt, per agent</h3>
+          <p>One shared review prompt or one per agent, as plain Markdown files with placeholders for the PR, SHA, checks, and your last review.</p>
+        </div>
+        <div class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="9" r="2.5"/><path d="M6 8.5v7M18 11.5c0 3-3 4-9.5 5.5"/></svg></div>
+          <h3>Exact-commit worktrees</h3>
+          <p>Every review runs in its own detached worktree at the PR head. If the branch moves mid-launch, ReviewBot stops and asks you to refresh.</p>
+        </div>
+        <div class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-3-6.7"/><path d="M21 4v5h-5"/></svg></div>
+          <h3>Knows what changed</h3>
+          <p>PRs you reviewed at an older commit show as <code>updated</code> with the number of new commits. Ones you've already handled at the current commit can't be launched again by accident.</p>
+        </div>
+        <div class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5M17 11l2 2 3.5-4"/></svg></div>
+          <h3>Your PRs, too</h3>
+          <p>A second tab tracks your own open PRs: conflicts, failing checks, who approved, whose review is stale. Re-request everyone stale with one key.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="agents" class="alt">
+    <div class="wrap split">
+      <div>
+        <div class="section-head">
+          <span class="kicker">Agents</span>
+          <h2>No defaults. Just the agents you choose.</h2>
+          <p>ReviewBot doesn't ship with a favorite. You declare each agent in a small TOML file,
+          and the TUI builds its shortcuts from it.</p>
+        </div>
+        <ul class="checklist">
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg><span><strong>Any Herdr kind:</strong> Claude Code, Codex, Gemini, Cursor, OpenCode, Copilot, Amp, and more.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg><span><strong>Same agent, different settings:</strong> a quick Codex pass on <code>x</code>, a high-effort one on <code>d</code>.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg><span><strong>Groups:</strong> launch several agents on one PR, each in its own tab.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg><span><strong>Checked up front:</strong> <code>reviewbot doctor</code> confirms every agent is installed and every prompt file exists.</span></li>
+        </ul>
+      </div>
+      <div>
+        <p class="code-label">~/.config/reviewbot/config.toml</p>
+<pre class="code"><code><span class="k">watch</span> = [<span class="s">"acme"</span>, <span class="s">"someone/tool"</span>]
+<span class="k">prompt</span> = <span class="s">"review.md"</span>
+
+<span class="h">[[agents]]</span>
+<span class="k">name</span> = <span class="s">"claude"</span>
+<span class="k">kind</span> = <span class="s">"claude"</span>
+<span class="k">key</span>  = <span class="s">"c"</span>
+
+<span class="h">[[agents]]</span>
+<span class="k">name</span> = <span class="s">"codex-deep"</span>
+<span class="k">kind</span> = <span class="s">"codex"</span>
+<span class="k">key</span>  = <span class="s">"d"</span>
+<span class="k">args</span> = [<span class="s">"-c"</span>, <span class="s">"model_reasoning_effort=high"</span>]
+<span class="k">prompt</span> = <span class="s">"codex-review.md"</span>
+
+<span class="h">[[groups]]</span>
+<span class="k">name</span>   = <span class="s">"pair"</span>
+<span class="k">agents</span> = [<span class="s">"claude"</span>, <span class="s">"codex-deep"</span>]
+<span class="k">key</span>    = <span class="s">"b"</span></code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="guarantee">
+        <div>
+          <h2>You stay the reviewer of record.</h2>
+          <p>ReviewBot never submits a review or posts a comment. The starter prompt tells the
+          agent not to edit the branch, push, or comment either. The findings come back to you
+          in the terminal, and what reaches GitHub is up to you.</p>
+        </div>
+        <a class="btn primary" href="#install">Set it up</a>
+      </div>
+    </div>
+  </section>
+
+  <section id="install" class="alt">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="kicker">Install</span>
+        <h2>Running in five minutes.</h2>
+        <p>ReviewBot is a Python CLI. It drives tools you probably already have.</p>
+      </div>
+      <div class="install-grid">
+        <div class="reqs">
+          <dl>
+            <div class="row"><dt>Python 3.11+ and uv</dt><dd>Installs and runs ReviewBot. <a href="https://docs.astral.sh/uv/">Get uv</a>.</dd></div>
+            <div class="row"><dt>GitHub CLI</dt><dd>All GitHub queries and clones go through <code>gh</code>, using the account it's logged in as. <a href="https://cli.github.com">Get gh</a>.</dd></div>
+            <div class="row"><dt>git</dt><dd>Per-PR worktrees.</dd></div>
+            <div class="row"><dt>Herdr 0.7+</dt><dd>The terminal workspace your review agents run in. <a href="https://herdr.dev">herdr.dev</a>.</dd></div>
+            <div class="row"><dt>Agent CLIs</dt><dd>Whichever agents you configure, such as Claude Code or Codex.</dd></div>
+          </dl>
+        </div>
+        <div>
+<pre class="code"><code><span class="c"># install</span>
+uv tool install git+https://github.com/mysticcoders/reviewbot
+
+<span class="c"># sign in to GitHub</span>
+gh auth login
+
+<span class="c"># write a config with what to watch and your agents</span>
+reviewbot init --watch acme --agent claude:c --agent codex:x
+
+<span class="c"># check gh, git, herdr, agents, and prompts</span>
+reviewbot doctor
+
+<span class="c"># inside Herdr</span>
+reviewbot tui</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>ReviewBot by <a href="https://wecodefire.com">wecodefire</a></span>
+    <span style="display:flex;gap:16px;align-items:center">
+      <a href="https://github.com/mysticcoders/reviewbot">Source</a>
+      <a href="https://github.com/mysticcoders/reviewbot#readme">Docs</a>
+      <button class="theme-toggle" type="button" id="theme">Theme</button>
+    </span>
+  </div>
+</footer>
+
+<script>
+document.querySelectorAll(".copy").forEach(function (button) {
+  button.addEventListener("click", function () {
+    navigator.clipboard.writeText(button.dataset.copy).then(function () {
+      button.textContent = "Copied";
+      setTimeout(function () { button.textContent = "Copy"; }, 1600);
+    });
+  });
+});
+(function () {
+  var root = document.documentElement;
+  var key = "reviewbot-theme";
+  try { var saved = localStorage.getItem(key); if (saved) root.dataset.theme = saved; } catch (e) {}
+  document.getElementById("theme").addEventListener("click", function () {
+    var dark = root.dataset.theme
+      ? root.dataset.theme === "dark"
+      : window.matchMedia("(prefers-color-scheme: dark)").matches;
+    root.dataset.theme = dark ? "light" : "dark";
+    try { localStorage.setItem(key, root.dataset.theme); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

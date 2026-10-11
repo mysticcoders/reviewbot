@@ -47,3 +47,20 @@ def test_launch_rejects_unknown_agent_before_querying(tmp_path, monkeypatch):
     result = run(tmp_path, monkeypatch, "launch", "acme/api#1", "--agent", "codex")
     assert result.exit_code != 0
     assert "unknown agent `codex` (available: claude)" in result.output
+
+
+def test_init_explains_an_existing_invalid_config(tmp_path, monkeypatch):
+    (tmp_path / "config.toml").write_text('default_agent = "codex"\n', encoding="utf-8")
+    result = run(tmp_path, monkeypatch, "init", "-w", "acme", "--agent", "claude:c")
+    assert result.exit_code != 0
+    assert "kept your existing" in result.output
+    assert "config.old.toml" in result.output
+    assert "--force" in result.output
+
+
+def test_init_says_flags_were_not_applied_to_an_existing_valid_config(tmp_path, monkeypatch):
+    (tmp_path / "config.toml").write_text('watch = ["*"]\n', encoding="utf-8")
+    result = run(tmp_path, monkeypatch, "init", "-w", "acme")
+    assert result.exit_code == 0
+    assert "were not applied" in result.output
+    assert cfg.load(tmp_path / "config.toml").scope.is_all

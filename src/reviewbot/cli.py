@@ -172,15 +172,31 @@ def init(force: bool, watch: tuple[str, ...], agent_specs: tuple[str, ...]) -> N
         (cfg.CONFIG_PATH.parent / "prompts" / name, _resource_text(f"prompts/{name}"))
         for name in PROMPT_TEMPLATES
     ]
+    kept_config = False
     for target, content in files:
         written = _write_if_absent(target, content, force=force)
+        kept_config = kept_config or (target == cfg.CONFIG_PATH and not written)
         click.secho(
             f"{'wrote' if written else 'exists'} {target}", fg="green" if written else "yellow",
         )
     try:
         cfg.load(cfg.CONFIG_PATH)
     except cfg.ConfigError as error:
-        raise click.ClickException(f"{cfg.CONFIG_PATH} is invalid: {error}") from None
+        if not kept_config:
+            raise click.ClickException(f"{cfg.CONFIG_PATH} is invalid: {error}") from None
+        raise click.ClickException(
+            f"kept your existing {cfg.CONFIG_PATH} (init never overwrites it without "
+            f"--force), but it is not valid for this version: {error}\n"
+            f"Move it aside and run init again, e.g. "
+            f"`mv {cfg.CONFIG_PATH} {cfg.CONFIG_PATH.with_name('config.old.toml')}`, "
+            "or rerun init with --force to replace it."
+        ) from None
+    if kept_config and (watch or agents):
+        click.secho(
+            f"--watch/--agent were not applied because {cfg.CONFIG_PATH} already exists; "
+            "edit it, or rerun with --force to replace it.", fg="yellow",
+        )
+        return
     if not agents:
         click.echo(f"Add [[agents]] entries to {cfg.CONFIG_PATH} to launch reviews.")
 

@@ -76,10 +76,10 @@ To run without installing, use `uv run reviewbot ...` from the checkout.
    reviewbot init --watch '*'                     # everything, agents added by hand
    ```
 
-   This writes `~/.config/reviewbot/config.toml` and the starter prompt
-   `~/.config/reviewbot/review.md` beside it. Existing files are left alone
-   unless you pass `--force`. Edit the config afterwards to add agents, groups,
-   args, or per-agent prompts (see below).
+   This writes `~/.config/reviewbot/config.toml` and the review templates into
+   `~/.config/reviewbot/prompts/`. Existing files are left alone unless you pass
+   `--force`. Edit the config afterwards to add agents, groups, combats, args,
+   per-agent prompts, or saved output (see below).
 
 4. **Check the setup:**
 
@@ -88,8 +88,9 @@ To run without installing, use `uv run reviewbot ...` from the checkout.
    ```
 
    It checks that `gh`, `git`, and `herdr` are on your `PATH`, that `gh` is
-   authenticated, that the config loads, and, for every configured agent, that
-   its executable is on your `PATH` and its prompt file exists.
+   authenticated, that the config loads, that every configured agent's
+   executable is on your `PATH`, and that every agent and combat prompt file
+   exists.
 
 5. **Start or attach to Herdr**, then run `reviewbot tui` inside it. Launched
    reviews open as new tabs in the focused Herdr workspace.
@@ -97,9 +98,8 @@ To run without installing, use `uv run reviewbot ...` from the checkout.
 ## Choosing what to watch
 
 The `watch` list in `config.toml` controls which repositories both queues draw
-from. Each entry is an owner (an org or user) or an `OWNER/REPO`:
-
-`watch` is required, so there is no implicit scope:
+from. Each entry is an owner (an org or user) or an `OWNER/REPO`. It is
+required, so there is no implicit scope:
 
 ```toml
 watch = ["*"]                       # every repository you can access
@@ -133,7 +133,7 @@ default. With none configured, the queues still work but nothing can be
 launched.
 
 ```toml
-prompt = "review.md"          # prompt for every agent without its own
+prompt = "prompts/review.md"  # prompt for every agent without its own
 
 [[agents]]
 name = "claude"               # used with --agent and in Herdr tab names
@@ -145,7 +145,7 @@ args = ["--model", "opus"]    # extra arguments for the agent CLI, optional
 name = "codex"
 kind = "codex"
 key = "x"
-prompt = "codex-review.md"    # this agent's own prompt
+prompt = "prompts/tests.md"   # this agent's own prompt
 
 [[agents]]
 name = "codex-deep"           # same kind twice with different settings is fine
@@ -160,7 +160,7 @@ key = "b"
 ```
 
 - `name`: 1-16 characters of lowercase letters, digits, `-`, or `_`; unique
-  across agents and groups.
+  across agents, groups, and combats.
 - `kind`: passed to `herdr agent start --kind`, which also names the executable
   `doctor` looks for. Run `herdr agent start --help` for the supported kinds
   (claude, codex, gemini, cursor, opencode, copilot, amp, and more).
@@ -172,13 +172,91 @@ key = "b"
 
 `reviewbot agents` lists what is configured.
 
+## Combat review
+
+A combat pits agents against each other on one PR: they review it, then answer
+each other's reviews. It needs at least two agents, and every setting is
+explicit except `key`, `opener`, and `judge`.
+
+```toml
+[[combats]]
+name = "duel"
+key = "m"
+agents = ["claude", "codex"]
+style = "handoff"                         # or "parallel"
+rounds = 2
+challenge_prompt = "prompts/challenge.md"
+opener = "claude"                         # optional walkthrough before the combat
+opener_prompt = "prompts/walkthrough.md"
+judge = "codex"                           # optional final verdict
+judge_prompt = "prompts/verdict.md"
+```
+
+- `style = "parallel"`: every agent reviews independently at the same time.
+  Then, for each of `rounds`, every agent receives the other agents' latest
+  reviews and confirms, disputes, or adds to them.
+- `style = "handoff"`: the first agent reviews, then agents take turns for
+  `rounds` turns. Each one receives every earlier review by the others. With
+  `rounds = 2`, claude reviews, codex answers claude, and claude rebuts codex.
+  An agent's first turn combines its own review prompt with the challenge
+  prompt.
+- `opener`: runs a walkthrough first ("here is what this PR does and what it
+  gets right"); its output is given to the combatants as context.
+- `judge`: receives every review and rebuttal and writes one final review with
+  agreed findings, resolved disputes, and findings that did not hold up.
+
+Each agent keeps one Herdr tab and session for the whole combat, so you can
+watch it or step in at any point. Turns are driven by a background
+`reviewbot` process: it sends each prompt, waits for the agent to finish its
+turn (including any time it spends waiting on you for permission), and reads
+the review the agent was told to write to `.reviewbot/<run>/` in the worktree.
+That directory ignores itself in Git. An agent that finishes without writing
+its review is reminded once; if it still has not, the run stops and is marked
+failed. Closing the TUI does not stop a run.
+
+```sh
+reviewbot runs        # recent runs, each step's status, and where reviews were saved
+```
+
+Nothing is posted to GitHub. The combat gives you the material; you submit
+the review.
+
+## Saving reviews
+
+Add an `[output]` table to keep every finished review:
+
+```toml
+[output]
+dir = "~/reviewbot-reviews"
+```
+
+With it, every launch (single agents and groups too, not only combats) uses
+the background runner, and each finished review is written to
+`<dir>/<owner>-<repo>/pr-<n>/<run>/<step>-<agent>-<role>.md`. Each file starts
+with front matter: repo, PR, URL, title, head SHA, run, launcher, step, agent,
+agent kind, role, round, and save time. Every saved review is also appended as
+one JSON line to `<dir>/index.jsonl`, which makes a simple audit log of which
+agents reviewed which commit, and when. Without `[output]`, reviews are not
+saved.
+
 ## Review prompts
 
 A prompt is a plain text or Markdown file sent to the agent once it starts in
-the PR worktree. `init` writes a starter `review.md` focused on test coverage
-and substantive correctness, security, and regression issues, which also tells
-the agent not to edit, push, comment, or submit a review. Change it freely, or
-give individual agents their own file.
+the PR worktree. `init` writes these templates into `prompts/`; change them
+freely or add your own:
+
+| Template | Use |
+| --- | --- |
+| `review.md` | general review focused on test coverage and substantive correctness, security, and regression issues |
+| `tests.md` | test coverage only |
+| `security.md` | security only |
+| `walkthrough.md` | a combat `opener_prompt`: what the PR does, what it gets right, where to look |
+| `challenge.md` | a combat `challenge_prompt`: confirm, dispute, or add to other reviews |
+| `verdict.md` | a combat `judge_prompt`: merge everything into one final review |
+
+All of them tell the agent not to edit, push, comment, or submit a review.
+When a review is being collected, ReviewBot appends one instruction naming the
+file to write it to, so custom prompts do not need to mention it.
 
 These placeholders are filled in; any other `{...}` text is left as is:
 
@@ -191,6 +269,10 @@ These placeholders are filled in; any other `{...}` text is left as is:
 | `{review_decision}`, `{checks}` | GitHub's review decision and check rollup |
 | `{previous_review}`, `{commits_since_review}` | your last review and commits since |
 | `{agent}` | the agent's configured name |
+| `{prior_reviews}` | in combats, the earlier reviews this step responds to (`none` otherwise) |
+
+If a step responds to earlier reviews and its template has no
+`{prior_reviews}`, they are appended under "Earlier reviews of this PR".
 
 Prompt files are read when you launch, so edits apply to the next review
 without restarting the TUI.
@@ -202,13 +284,18 @@ without restarting the TUI.
 ```toml
 watch = ["acme"]                    # required; ["*"] for everything
 work_dir = "~/reviewbot-workspaces" # cached clones and per-PR worktrees
-prompt = "review.md"                # shared prompt for agents without their own
+prompt = "prompts/review.md"        # shared prompt for agents without their own
 # herdr_workspace = "workspace-id"  # force new tabs into one Herdr workspace
 
 [[agents]]                          # see "Review agents"
 name = "claude"
 kind = "claude"
 key = "c"
+
+# [[groups]] and [[combats]]        # see "Review agents" and "Combat review"
+
+[output]                            # optional; see "Saving reviews"
+dir = "~/reviewbot-reviews"
 
 # Reuse existing local clones instead of cloning into work_dir.
 [[checkouts]]
@@ -234,7 +321,7 @@ reviewbot tui
 | `r` | refresh the current tab |
 | `q` | quit |
 | `o` | open the selected PR on GitHub |
-| your agent keys | launch that agent or group on the selected review request (shown in the footer) |
+| your agent keys | launch that agent, group, or combat on the selected review request (shown in the footer) |
 | `a` | (My PRs) pick reviewers: previous reviewers, GitHub's suggestions, or typed `login` / `org/team`; `ctrl+s` requests, `escape` cancels |
 | `e` | (My PRs) re-request review from everyone whose review is stale or requested changes |
 
@@ -265,16 +352,18 @@ The same data is available without the TUI:
 ```sh
 reviewbot status                          # review requests as a table
 reviewbot mine                            # your open PRs as a table
-reviewbot agents                          # configured agents, groups, and keys
+reviewbot agents                          # configured agents, groups, combats, and keys
+reviewbot runs                            # background runs and their progress
 reviewbot next                            # show the most recent actionable request
 reviewbot next --agent claude             # ...and offer to launch it
 reviewbot next --agent pair --yes         # launch a group without asking
 reviewbot launch acme/api#422 --agent claude
-reviewbot launch https://github.com/acme/api/pull/422 --agent codex
+reviewbot launch https://github.com/acme/api/pull/422 --agent duel
 ```
 
-`--agent` takes any agent or group name from the config. `launch` looks the PR up in that repository's review requests, so it works
-regardless of the configured `watch` list.
+`--agent` takes any agent, group, or combat name from the config. `launch`
+looks the PR up in that repository's review requests, so it works regardless of
+the configured `watch` list.
 
 ## What a launch does
 
@@ -283,12 +372,16 @@ regardless of the configured `watch` list.
 2. Verifies the fetched commit still matches the PR head, then creates a
    detached worktree at that exact SHA under
    `<work_dir>/worktrees/<owner>-<repo>/pr-<n>-<sha>`.
-3. For each agent (one, or every member of a group), opens a Herdr tab named
-   `<repo> #<n> <agent> review`, runs `herdr agent start --kind <kind> -- <args>`
-   there, and sends it the rendered prompt.
+3. For each agent in the first phase (one agent, every member of a group, or
+   a combat's first speakers), opens a Herdr tab named
+   `<repo> #<n> <agent> review` and runs
+   `herdr agent start --kind <kind> -- <args>` there.
+4. Without combats or `[output]`, sends each agent its rendered prompt and is
+   done. Otherwise, starts the background runner described under "Combat
+   review", which opens later agents' tabs as their turns come up.
 
-Prompt files are read before anything is cloned or opened, so a missing prompt
-fails the launch cleanly.
+Prompt files are checked before anything is cloned or opened, so a missing
+prompt fails the launch cleanly.
 
 Worktrees are not cleaned up automatically. Remove old ones with
 `git -C <clone> worktree remove <path>` or `git worktree prune` after deleting

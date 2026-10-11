@@ -13,7 +13,9 @@ work_dir = "~/reviewbot-workspaces"
 
 # Prompt sent to every agent that does not set its own `prompt`. Relative
 # paths resolve against this file's directory. See README for placeholders.
-prompt = "review.md"
+# `reviewbot init` also writes walkthrough, tests, security, challenge, and
+# verdict templates into prompts/ for per-agent prompts and combat reviews.
+prompt = "prompts/review.md"
 
 # Optional: force new tabs into a particular Herdr workspace ID.
 # When omitted, Herdr uses the currently focused workspace.
@@ -27,6 +29,29 @@ prompt = "review.md"
 # name = "pair"
 # agents = ["claude", "codex"]
 # key = "b"
+
+# Optional: combat review. Agents review the PR, then answer each other's
+# reviews. Needs at least two agents. Every setting below is required except
+# key, opener, and judge (an opener or judge needs its prompt).
+#   style = "parallel"  everyone reviews at once, then each round every agent
+#                       answers the others' latest reviews
+#   style = "handoff"   agents take turns; each sees every review before it
+# [[combats]]
+# name = "duel"
+# key = "d"
+# agents = ["claude", "codex"]
+# style = "handoff"
+# rounds = 2
+# challenge_prompt = "prompts/challenge.md"
+# opener = "claude"                       # walkthrough pass before the combat
+# opener_prompt = "prompts/walkthrough.md"
+# judge = "codex"                         # merges everything into a verdict
+# judge_prompt = "prompts/verdict.md"
+
+# Optional: save every finished review as Markdown (with metadata) plus an
+# append-only index.jsonl. Without this table, reviews are not saved.
+# [output]
+# dir = "~/reviewbot-reviews"
 
 # Optional: reuse existing local clones instead of cloning into work_dir.
 # ReviewBot only adds detached worktrees and fetches PR refs; it never

@@ -150,3 +150,52 @@ def test_label_drops_owner_only_for_single_owner_scope():
     assert Scope.parse(["acme"]).label("acme/demo") == "demo"
     assert Scope.parse(["acme", "other/tool"]).label("acme/demo") == "acme/demo"
     assert Scope().label("acme/demo") == "acme/demo"
+
+
+COMBAT_BASE = (
+    'watch = ["*"]\nprompt = "p.md"\n'
+    '[[agents]]\nname = "a"\nkind = "x"\n[[agents]]\nname = "b"\nkind = "y"\n'
+)
+
+
+def test_combat_loads_with_everything_explicit(tmp_path):
+    config = load(write_config(tmp_path, COMBAT_BASE + (
+        '[[combats]]\nname = "duel"\nkey = "d"\nagents = ["a", "b"]\nstyle = "handoff"\n'
+        'rounds = 2\nchallenge_prompt = "c.md"\nopener = "a"\nopener_prompt = "w.md"\n'
+        '[output]\ndir = "out"\n'
+    )))
+    duel = config.combat("duel")
+    assert (duel.style, duel.rounds, duel.opener, duel.judge) == ("handoff", 2, "a", None)
+    assert duel.challenge_prompt == tmp_path / "c.md"
+    assert config.target_names == ["a", "b", "duel"]
+    assert [agent.name for agent in config.resolve("duel")] == ["a", "b"]
+    assert config.output.dir == tmp_path / "out"
+
+
+@pytest.mark.parametrize(
+    ("snippet", "message"),
+    [
+        ('agents = ["a"]\nstyle = "handoff"\nrounds = 1\nchallenge_prompt = "c"\n', "two distinct"),
+        ('agents = ["a", "a"]\nstyle = "handoff"\nrounds = 1\nchallenge_prompt = "c"\n',
+         "two distinct"),
+        ('agents = ["a", "z"]\nstyle = "handoff"\nrounds = 1\nchallenge_prompt = "c"\n',
+         "unknown agent"),
+        ('agents = ["a", "b"]\nrounds = 1\nchallenge_prompt = "c"\n', "`style` must be"),
+        ('agents = ["a", "b"]\nstyle = "handoff"\nchallenge_prompt = "c"\n', "`rounds`"),
+        ('agents = ["a", "b"]\nstyle = "handoff"\nrounds = 0\nchallenge_prompt = "c"\n',
+         "`rounds`"),
+        ('agents = ["a", "b"]\nstyle = "handoff"\nrounds = 1\n', "`challenge_prompt`"),
+        (('agents = ["a", "b"]\nstyle = "handoff"\nrounds = 1\nchallenge_prompt = "c"\n'
+         'judge = "b"\n'), "`judge_prompt`"),
+        (('agents = ["a", "b"]\nstyle = "handoff"\nrounds = 1\nchallenge_prompt = "c"\n'
+         'opener = "q"\nopener_prompt = "w"\n'), "unknown agent"),
+    ],
+)
+def test_invalid_combat(tmp_path, snippet, message):
+    with pytest.raises(ConfigError, match=message):
+        load(write_config(tmp_path, COMBAT_BASE + '[[combats]]\nname = "duel"\n' + snippet))
+
+
+def test_output_needs_dir(tmp_path):
+    with pytest.raises(ConfigError, match="needs `dir`"):
+        load(write_config(tmp_path, 'watch = ["*"]\n[output]\n'))

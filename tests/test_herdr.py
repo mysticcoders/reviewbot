@@ -11,9 +11,9 @@ from reviewbot.herdr import (
     _agent_name,
     _pane_ids,
     _start_agent_with_retry,
-    launch_review,
     render_prompt,
 )
+from reviewbot.run import launch_review
 
 
 def candidate() -> ReviewCandidate:
@@ -32,13 +32,19 @@ def test_recursive_pane_id_extraction():
     assert _pane_ids(snapshot) == {"one"}
 
 
-def test_bundled_prompt_forbids_mutation_and_includes_status():
-    template = Path("src/reviewbot/_resources/review.md").read_text(encoding="utf-8")
-    prompt = render_prompt(template, candidate(), "claude")
+@pytest.mark.parametrize(
+    "name", ["review", "walkthrough", "tests", "security", "challenge", "verdict"]
+)
+def test_bundled_prompts_forbid_mutation_and_fill_placeholders(name):
+    path = Path(f"src/reviewbot/_resources/prompts/{name}.md")
+    prompt = render_prompt(
+        path.read_text(encoding="utf-8"), candidate(), "claude", {"prior_reviews": "R"}
+    )
     assert "acme/demo#12" in prompt
-    assert "Do not edit" in prompt
-    assert "commits since my previous review: 2" in prompt
-    assert "{" not in prompt
+    assert "Do not edit the branch" in prompt
+    assert re.search(r"\{\w+\}", prompt) is None
+    if name == "review":
+        assert "commits since my previous review: 2" in prompt
 
 
 def test_render_prompt_fills_known_fields_and_keeps_other_braces():
@@ -82,7 +88,7 @@ def test_launch_review_uses_each_agents_kind_args_and_prompt(tmp_path, monkeypat
         return ""
 
     monkeypatch.setattr("reviewbot.herdr._run", fake_run)
-    monkeypatch.setattr("reviewbot.herdr.prepare_checkout", lambda c, cand: tmp_path)
+    monkeypatch.setattr("reviewbot.run.prepare_checkout", lambda c, cand: tmp_path)
     monkeypatch.setattr("reviewbot.herdr._existing_tab_pane", lambda label: next(panes))
     results = launch_review(config, candidate(), agent="pair")
 
@@ -104,7 +110,7 @@ def test_launch_review_fails_before_checkout_when_prompt_missing(tmp_path, monke
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "reviewbot.herdr.prepare_checkout",
+        "reviewbot.run.prepare_checkout",
         lambda *a: (_ for _ in ()).throw(AssertionError("checked out")),
     )
     with pytest.raises(LaunchError, match="cannot read prompt"):

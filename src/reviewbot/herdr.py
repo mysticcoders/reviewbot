@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import Agent, Config, ConfigError
+from .config import Agent, Config
 from .github import ReviewCandidate
 
 
@@ -24,9 +24,10 @@ class LaunchResult:
     tab_label: str
     pane_id: str
     checkout: Path
+    agent_name: str
 
 
-def _run(*args: str, timeout: int = 120) -> str:
+def _run(*args: str, timeout: float | None = 120) -> str:
     try:
         result = subprocess.run(
             args, capture_output=True, text=True, timeout=timeout, check=False
@@ -195,16 +196,23 @@ def prompt_fields(candidate: ReviewCandidate, agent: str) -> dict[str, str]:
     }
 
 
-def render_prompt(template: str, candidate: ReviewCandidate, agent: str) -> str:
+def render_prompt(
+    template: str, candidate: ReviewCandidate, agent: str, extra: dict[str, str] | None = None
+) -> str:
     """Fill known `{name}` placeholders, leaving any other braces untouched."""
-    fields = prompt_fields(candidate, agent)
+    fields = {**prompt_fields(candidate, agent), **(extra or {})}
     return PLACEHOLDER.sub(lambda match: fields.get(match.group(1), match.group(0)), template)
 
 
-def launch_agent(
-    config: Config, candidate: ReviewCandidate, *, agent: Agent, checkout: Path, template: str
+def tab_label(candidate: ReviewCandidate, agent: str) -> str:
+    return f"{candidate.repo.rsplit('/', 1)[-1]} #{candidate.number} {agent} review"
+
+
+def open_session(
+    config: Config, candidate: ReviewCandidate, *, agent: Agent, checkout: Path
 ) -> LaunchResult:
-    label = f"{candidate.repo.rsplit('/', 1)[-1]} #{candidate.number} {agent.name} review"
+    """Open (or reuse) the PR's Herdr tab for this agent and start the agent in it."""
+    label = tab_label(candidate, agent.name)
     pane_id = _existing_tab_pane(label)
     if pane_id is None:
         before = _snapshot_panes()
@@ -222,24 +230,24 @@ def launch_agent(
         pane_id = created.pop()
     agent_name = _agent_name(candidate.repo, candidate.number, agent.name)
     _start_agent_with_retry(agent_name, agent, pane_id)
-    _run("herdr", "agent", "prompt", agent_name, render_prompt(template, candidate, agent.name))
-    return LaunchResult(agent=agent.name, tab_label=label, pane_id=pane_id, checkout=checkout)
+    return LaunchResult(
+        agent=agent.name, tab_label=label, pane_id=pane_id, checkout=checkout,
+        agent_name=agent_name,
+    )
 
 
-def launch_review(
-    config: Config, candidate: ReviewCandidate, *, agent: str
-) -> list[LaunchResult]:
-    if not candidate.actionable:
-        raise LaunchError(f"{candidate.key} is {candidate.status.value}, not actionable")
-    try:
-        agents = config.resolve(agent)
-        templates = {item.name: item.prompt_template() for item in agents}
-    except ConfigError as error:
-        raise LaunchError(str(error)) from None
-    checkout = prepare_checkout(config, candidate)
-    return [
-        launch_agent(
-            config, candidate, agent=item, checkout=checkout, template=templates[item.name]
-        )
-        for item in agents
-    ]
+def send_prompt(agent_name: str, text: str) -> None:
+    _run("herdr", "agent", "prompt", agent_name, text)
+
+
+def prompt_and_wait(agent_name: str, text: str) -> None:
+    """Send a prompt and block until the agent finishes that turn.
+
+    Herdr reports `blocked` when an agent waits on the user (for example a permission
+    prompt), so after the first settled state keep waiting for idle or done.
+    """
+    _run("herdr", "agent", "prompt", agent_name, text, "--wait", timeout=None)
+    _run(
+        "herdr", "agent", "wait", agent_name, "--until", "idle", "--until", "done",
+        timeout=None,
+    )

@@ -15,11 +15,14 @@ from rich.table import Table
 from . import __version__
 from . import config as cfg
 from .github import GhError, ReviewCandidate, authored_prs, review_queue
-from .herdr import LaunchError, active_review_keys, launch_review
+from .herdr import LaunchError, active_review_keys
+from .run import collects, execute, launch_review, list_runs
 
 
 def _resource_text(name: str) -> str:
-    return (resources.files("reviewbot") / "_resources" / name).read_text(encoding="utf-8")
+    return resources.files("reviewbot").joinpath("_resources", *name.split("/")).read_text(
+        encoding="utf-8"
+    )
 
 
 def _write_if_absent(target: Path, content: str, *, force: bool) -> bool:
@@ -95,12 +98,19 @@ def _do_launch(config: cfg.Config, candidate: ReviewCandidate, agent: str) -> No
             f"started {result.agent} in Herdr tab `{result.tab_label}` ({result.checkout})",
             fg="green",
         )
+    if collects(config, agent):
+        click.echo("A background runner is driving the review; follow it with `reviewbot runs`.")
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__, prog_name="reviewbot")
 def cli() -> None:
     """Review requested PRs interactively with your configured agents in Herdr."""
+
+
+PROMPT_TEMPLATES = (
+    "review.md", "walkthrough.md", "tests.md", "security.md", "challenge.md", "verdict.md",
+)
 
 
 def _toml_list(values: list[str] | tuple[str, ...]) -> str:
@@ -157,10 +167,12 @@ def init(force: bool, watch: tuple[str, ...], agent_specs: tuple[str, ...]) -> N
     except cfg.ConfigError as error:
         raise click.ClickException(str(error)) from None
     agents = [_agent_spec(spec) for spec in agent_specs]
-    for target, content in (
-        (cfg.CONFIG_PATH, render_config(scope, agents)),
-        (cfg.CONFIG_PATH.parent / "review.md", _resource_text("review.md")),
-    ):
+    files = [(cfg.CONFIG_PATH, render_config(scope, agents))]
+    files += [
+        (cfg.CONFIG_PATH.parent / "prompts" / name, _resource_text(f"prompts/{name}"))
+        for name in PROMPT_TEMPLATES
+    ]
+    for target, content in files:
         written = _write_if_absent(target, content, force=force)
         click.secho(
             f"{'wrote' if written else 'exists'} {target}", fg="green" if written else "yellow",
@@ -213,6 +225,15 @@ def doctor() -> None:
         required.append(_check(
             f"agent {agent.name} prompt", agent.prompt.is_file(), str(agent.prompt),
         ))
+    for combat in config.combats:
+        for role, path in (
+            ("challenge", combat.challenge_prompt), ("opener", combat.opener_prompt),
+            ("judge", combat.judge_prompt),
+        ):
+            if path is not None:
+                required.append(_check(f"combat {combat.name} {role}", path.is_file(), str(path)))
+    if config.output:
+        _check("output", True, f"saving finished reviews to {config.output.dir}")
     if not all(required):
         raise click.ClickException("setup incomplete")
 
@@ -229,7 +250,49 @@ def agents_command() -> None:
         table.add_row(agent.name, agent.key or "", launches, str(agent.prompt))
     for group in config.groups:
         table.add_row(group.name, group.key or "", ", ".join(group.agents), "per agent")
+    for combat in config.combats:
+        order = " -> " if combat.style == "handoff" else " | "
+        parts = [f"opener {combat.opener}"] if combat.opener else []
+        parts.append(f"{combat.style}: {order.join(combat.agents)} x{combat.rounds} round(s)")
+        if combat.judge:
+            parts.append(f"judge {combat.judge}")
+        table.add_row(combat.name, combat.key or "", "; ".join(parts), str(combat.challenge_prompt))
     Console().print(table)
+    if config.output:
+        click.echo(f"Finished reviews are saved to {config.output.dir}")
+
+
+@cli.command("runs")
+@click.option("--limit", default=10, show_default=True, help="How many recent runs to show.")
+def runs_command(limit: int) -> None:
+    """Show recent background review runs and each step's progress."""
+    config = _load()
+    runs = list_runs(config)[:limit]
+    if not runs:
+        click.echo("No review runs yet.")
+        return
+    console = Console()
+    for run in runs:
+        color = {"done": "green", "failed": "red"}.get(run.get("status"), "yellow")
+        console.print(
+            f"[bold]{run['key']}[/bold] {run['launcher']} "
+            f"[{color}]{run.get('status')}[/{color}] · {run.get('started_at')} · {run['run']}"
+        )
+        for step in run.get("steps", []):
+            where = step.get("saved") or step.get("path") or ""
+            console.print(
+                f"  {step['step']:>2}. {step['agent']} {step['role']}"
+                f"{' r' + str(step['round']) if step['round'] else ''} · {step['status']} {where}"
+            )
+        if run.get("error"):
+            console.print(f"  [red]{run['error']}[/red]")
+
+
+@cli.command("run-plan", hidden=True)
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def run_plan_command(run_dir: Path) -> None:
+    """Drive a launched run to completion (started in the background by launches)."""
+    execute(run_dir)
 
 
 @cli.command("status")

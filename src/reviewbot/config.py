@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 CONFIG_DIR = Path("~/.config/reviewbot").expanduser()
@@ -90,10 +90,14 @@ class Agent:
     args: tuple[str, ...] = ()
 
     def prompt_template(self) -> str:
-        try:
-            return self.prompt.read_text(encoding="utf-8")
-        except OSError as error:
-            raise ConfigError(f"cannot read prompt for agent `{self.name}`: {error}") from None
+        return read_prompt(self.prompt, f"agent `{self.name}`")
+
+
+def read_prompt(path: Path, owner: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ConfigError(f"cannot read prompt for {owner}: {error}") from None
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,38 @@ class Group:
     key: str | None = None
 
 
+COMBAT_STYLES = ("parallel", "handoff")
+
+
+@dataclass(frozen=True)
+class Combat:
+    """Agents that review a PR and then answer each other's reviews.
+
+    `parallel`: every agent reviews independently, then each round every agent
+    answers the others' latest reviews. `handoff`: agents take turns, each one
+    seeing every review before it. An optional opener runs a walkthrough first,
+    and an optional judge merges everything into a final verdict.
+    """
+
+    name: str
+    agents: tuple[str, ...]
+    style: str
+    rounds: int
+    challenge_prompt: Path
+    key: str | None = None
+    opener: str | None = None
+    opener_prompt: Path | None = None
+    judge: str | None = None
+    judge_prompt: Path | None = None
+
+
+@dataclass(frozen=True)
+class Output:
+    """Where finished reviews are saved as Markdown, with an append-only index."""
+
+    dir: Path
+
+
 @dataclass(frozen=True)
 class Config:
     scope: Scope
@@ -112,28 +148,45 @@ class Config:
     herdr_workspace: str | None
     agents: tuple[Agent, ...] = ()
     groups: tuple[Group, ...] = ()
+    combats: tuple[Combat, ...] = ()
     checkouts: tuple[Checkout, ...] = ()
+    output: Output | None = None
     path: Path = field(default=CONFIG_PATH)
 
     def with_scope(self, scope: Scope) -> Config:
-        return Config(
-            scope=scope, work_dir=self.work_dir, herdr_workspace=self.herdr_workspace,
-            agents=self.agents, groups=self.groups, checkouts=self.checkouts, path=self.path,
-        )
+        return replace(self, scope=scope)
+
+    @property
+    def launchers(self) -> tuple[Agent | Group | Combat, ...]:
+        """Everything that can be launched, in TUI order: agents, groups, combats."""
+        return (*self.agents, *self.groups, *self.combats)
 
     @property
     def target_names(self) -> list[str]:
-        """Every name accepted by `--agent`: agents first, then groups."""
-        return [agent.name for agent in self.agents] + [group.name for group in self.groups]
+        """Every name accepted by `--agent`: agents, then groups, then combats."""
+        return [item.name for item in self.launchers]
+
+    def agent(self, name: str) -> Agent:
+        for agent in self.agents:
+            if agent.name == name:
+                return agent
+        raise ConfigError(f"unknown agent `{name}`")
+
+    def combat(self, name: str) -> Combat | None:
+        return next((combat for combat in self.combats if combat.name == name), None)
 
     def resolve(self, name: str) -> list[Agent]:
-        """The agents to launch for an agent or group name."""
+        """The agents taking part in an agent, group, or combat, in order."""
         by_name = {agent.name: agent for agent in self.agents}
         if name in by_name:
             return [by_name[name]]
         for group in self.groups:
             if group.name == name:
                 return [by_name[member] for member in group.agents]
+        combat = self.combat(name)
+        if combat:
+            members = [combat.opener, *combat.agents, combat.judge]
+            return [by_name[member] for member in dict.fromkeys(m for m in members if m)]
         available = ", ".join(self.target_names) or "none configured"
         raise ConfigError(f"unknown agent `{name}` (available: {available})")
 
@@ -193,13 +246,15 @@ def _name(value: object, kind: str, seen: set[str]) -> str:
             f"{kind} name `{name}` must be 1-16 lowercase letters, digits, '-' or '_'."
         )
     if name in seen:
-        raise ConfigError(f"agent/group name `{name}` is defined more than once.")
+        raise ConfigError(f"name `{name}` is defined more than once across agents, groups, and combats.")
     seen.add(name)
     return name
 
 
-def _agents(raw: dict, base: Path) -> tuple[tuple[Agent, ...], tuple[Group, ...]]:
-    """Read `[[agents]]` and `[[groups]]`, validating names, keys, prompts, and members."""
+def _agents(
+    raw: dict, base: Path
+) -> tuple[tuple[Agent, ...], tuple[Group, ...], tuple[Combat, ...]]:
+    """Read `[[agents]]`, `[[groups]]`, and `[[combats]]`, validating names, keys, and members."""
     seen: set[str] = set()
     keys: dict[str, str] = {}
     shared_prompt = raw.get("prompt")
@@ -232,7 +287,55 @@ def _agents(raw: dict, base: Path) -> tuple[tuple[Agent, ...], tuple[Group, ...]
         groups.append(Group(
             name=name, agents=tuple(members), key=_key(item.get("key"), name, keys),
         ))
-    return tuple(agents), tuple(groups)
+    combats = [_combat(item, base, known, seen, keys) for item in raw.get("combats", [])]
+    return tuple(agents), tuple(groups), tuple(combats)
+
+
+def _combat(
+    item: dict, base: Path, known: set[str], seen: set[str], keys: dict[str, str]
+) -> Combat:
+    """Validate one `[[combats]]` table; every setting is explicit, nothing is defaulted."""
+    name = _name(item.get("name"), "combat", seen)
+    members = item.get("agents", [])
+    if not isinstance(members, list) or len(set(members)) < 2 or len(set(members)) != len(members):
+        raise ConfigError(f"combat `{name}` needs an `agents` list of at least two distinct agents.")
+    for role in ("opener", "judge"):
+        if item.get(role) is not None:
+            members = [*members, item[role]]
+    missing = [member for member in members if member not in known]
+    if missing:
+        raise ConfigError(f"combat `{name}` references unknown agent(s): {', '.join(missing)}")
+    style = item.get("style")
+    if style not in COMBAT_STYLES:
+        raise ConfigError(f"combat `{name}` `style` must be one of: {', '.join(COMBAT_STYLES)}.")
+    rounds = item.get("rounds")
+    if not isinstance(rounds, int) or isinstance(rounds, bool) or rounds < 1:
+        raise ConfigError(f"combat `{name}` `rounds` must be a whole number of at least 1.")
+
+    def prompt_for(field_name: str, required: bool) -> Path | None:
+        value = item.get(field_name)
+        if required and not value:
+            raise ConfigError(f"combat `{name}` needs `{field_name}`.")
+        return _expand(str(value), base) if value else None
+
+    opener = item.get("opener")
+    judge = item.get("judge")
+    return Combat(
+        name=name, agents=tuple(item["agents"]), style=style, rounds=rounds,
+        challenge_prompt=prompt_for("challenge_prompt", True),
+        key=_key(item.get("key"), name, keys),
+        opener=opener, opener_prompt=prompt_for("opener_prompt", bool(opener)),
+        judge=judge, judge_prompt=prompt_for("judge_prompt", bool(judge)),
+    )
+
+
+def _output(raw: dict, base: Path) -> Output | None:
+    table = raw.get("output")
+    if table is None:
+        return None
+    if not isinstance(table, dict) or not table.get("dir"):
+        raise ConfigError("`[output]` needs `dir`, the directory finished reviews are saved to.")
+    return Output(dir=_expand(str(table["dir"]), base))
 
 
 def load(path: Path | None = None) -> Config:
@@ -245,13 +348,15 @@ def load(path: Path | None = None) -> Config:
     except tomllib.TOMLDecodeError as error:
         raise ConfigError(f"{path}: {error}") from None
     base = path.parent
-    agents, groups = _agents(raw, base)
+    agents, groups, combats = _agents(raw, base)
     return Config(
         scope=_scope(raw),
         work_dir=_expand(raw.get("work_dir", "~/reviewbot-workspaces"), base),
         herdr_workspace=raw.get("herdr_workspace"),
         agents=agents,
         groups=groups,
+        combats=combats,
         checkouts=_checkouts(raw, base),
+        output=_output(raw, base),
         path=path,
     )

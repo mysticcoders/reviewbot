@@ -31,7 +31,8 @@ from ..github import (
     request_reviewers,
     review_queue,
 )
-from ..herdr import LaunchError, active_review_keys, launch_review
+from ..herdr import LaunchError, active_review_keys
+from ..run import collects, launch_review
 
 
 def _display_status(candidate: ReviewCandidate, active: set[str]) -> str:
@@ -143,9 +144,9 @@ class ReviewQueueApp(App[None]):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.config = config
-        for agent in (*config.agents, *config.groups):
-            if agent.key:
-                self.bind(agent.key, f"launch({agent.name!r})", description=agent.name)
+        for launcher in config.launchers:
+            if launcher.key:
+                self.bind(launcher.key, f"launch({launcher.name!r})", description=launcher.name)
         self._table: DataTable[str]
         self._mine_table: DataTable[str]
         self._detail: Static
@@ -400,7 +401,8 @@ class ReviewQueueApp(App[None]):
                 (self._table.cursor_row, 0), "in-progress"
             )
             names = ", ".join(result.agent for result in results)
-            self._status_line.update(f"Started {names} for {candidate.key} in Herdr")
+            follow = " · progress: `reviewbot runs`" if collects(self.config, agent) else ""
+            self._status_line.update(f"Started {agent} ({names}) for {candidate.key}{follow}")
         finally:
             self._launching = False
 

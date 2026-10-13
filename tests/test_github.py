@@ -1,3 +1,8 @@
+import asyncio
+
+import pytest
+
+from reviewbot import github
 from reviewbot.config import Scope
 from reviewbot.github import (
     QueueStatus,
@@ -82,3 +87,41 @@ def test_authored_queries_for_each_scope_shape():
         f"{base} user:acme",
         f"{base} repo:x/one repo:y/two",
     ]
+
+
+def _flaky(monkeypatch, errors: list[str]) -> list[int]:
+    """Make _run_once fail with each queued error in turn, then succeed; return the call log."""
+    calls: list[int] = []
+
+    async def run_once(*args, timeout):
+        calls.append(1)
+        if errors:
+            raise github.GhError(errors.pop(0))
+        return "ok"
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(github, "_run_once", run_once)
+    monkeypatch.setattr(github.asyncio, "sleep", no_sleep)
+    return calls
+
+
+def test_run_retries_github_502(monkeypatch):
+    calls = _flaky(monkeypatch, ["gh: HTTP 502", "unexpected end of JSON input"])
+    assert asyncio.run(github._run("gh", "api", "graphql")) == "ok"
+    assert len(calls) == 3
+
+
+def test_run_gives_up_after_attempts(monkeypatch):
+    calls = _flaky(monkeypatch, ["gh: HTTP 502"] * 5)
+    with pytest.raises(github.GhError, match="502"):
+        asyncio.run(github._run("gh", "api", "graphql"))
+    assert len(calls) == 3
+
+
+def test_run_does_not_retry_client_errors(monkeypatch):
+    calls = _flaky(monkeypatch, ["gh: Not Found (HTTP 404)"])
+    with pytest.raises(github.GhError, match="404"):
+        asyncio.run(github._run("gh", "api", "repos/x/y"))
+    assert len(calls) == 1

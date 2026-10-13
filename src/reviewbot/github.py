@@ -52,7 +52,18 @@ class ReviewCandidate:
         return self.status in {QueueStatus.READY, QueueStatus.UPDATED}
 
 
-async def _run(*args: str, timeout: float = 60.0) -> str:
+_TRANSIENT_MARKERS = (
+    "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504",
+    "unexpected end of JSON input", "timed out after",
+)
+
+
+def _transient(error: GhError) -> bool:
+    """GitHub 5xx responses, truncated bodies, and timeouts are worth retrying."""
+    return any(marker in str(error) for marker in _TRANSIENT_MARKERS)
+
+
+async def _run_once(*args: str, timeout: float) -> str:
     proc = await asyncio.create_subprocess_exec(
         *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
@@ -66,6 +77,18 @@ async def _run(*args: str, timeout: float = 60.0) -> str:
         message = stderr.decode("utf-8", errors="replace").strip()
         raise GhError(message or f"exit {proc.returncode}: {' '.join(args)}")
     return stdout.decode("utf-8", errors="replace")
+
+
+async def _run(*args: str, timeout: float = 60.0, attempts: int = 3) -> str:
+    """Run a gh command, retrying transient GitHub failures with a short backoff."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return await _run_once(*args, timeout=timeout)
+        except GhError as error:
+            if attempt == attempts or not _transient(error):
+                raise
+            await asyncio.sleep(attempt)
+    raise AssertionError("unreachable")
 
 
 async def current_login() -> str:

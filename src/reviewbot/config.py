@@ -1,4 +1,4 @@
-"""Configuration for the GitHub review queue, review agents, and Herdr launcher."""
+"""Configuration for the GitHub review queue, review agents, and their multiplexer."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ CONFIG_PATH = CONFIG_DIR / "config.toml"
 RESERVED_KEYS = frozenset("qro12ae")
 NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,15}")
 KEY_PATTERN = re.compile(r"[A-Za-z0-9]")
+MULTIPLEXERS = {"herdr": "Herdr", "rex": "Rex"}
 
 
 class ConfigError(Exception):
@@ -81,13 +82,14 @@ class Checkout:
 
 @dataclass(frozen=True)
 class Agent:
-    """A review agent: a Herdr agent kind plus its launch args, TUI key, and prompt file."""
+    """A review agent: its kind, the command Rex runs, launch args, TUI key, and prompt file."""
 
     name: str
     kind: str
     prompt: Path
     key: str | None = None
     args: tuple[str, ...] = ()
+    command: str | None = None
 
     def prompt_template(self) -> str:
         return read_prompt(self.prompt, f"agent `{self.name}`")
@@ -145,13 +147,19 @@ class Output:
 class Config:
     scope: Scope
     work_dir: Path
+    multiplexer: str
     herdr_workspace: str | None
+    rex_session: str | None = None
     agents: tuple[Agent, ...] = ()
     groups: tuple[Group, ...] = ()
     combats: tuple[Combat, ...] = ()
     checkouts: tuple[Checkout, ...] = ()
     output: Output | None = None
     path: Path = field(default=CONFIG_PATH)
+
+    @property
+    def multiplexer_name(self) -> str:
+        return MULTIPLEXERS[self.multiplexer]
 
     def with_scope(self, scope: Scope) -> Config:
         return replace(self, scope=scope)
@@ -251,8 +259,19 @@ def _name(value: object, kind: str, seen: set[str]) -> str:
     return name
 
 
+def _multiplexer(raw: dict) -> str:
+    """Read the required `multiplexer`: which terminal multiplexer hosts the agents."""
+    value = raw.get("multiplexer")
+    if value not in MULTIPLEXERS:
+        choices = " or ".join(f'"{name}"' for name in MULTIPLEXERS)
+        raise ConfigError(
+            f"`multiplexer` must be {choices}: the terminal multiplexer that hosts review agents."
+        )
+    return value
+
+
 def _agents(
-    raw: dict, base: Path
+    raw: dict, base: Path, multiplexer: str
 ) -> tuple[tuple[Agent, ...], tuple[Group, ...], tuple[Combat, ...]]:
     """Read `[[agents]]`, `[[groups]]`, and `[[combats]]`, validating names, keys, and members."""
     seen: set[str] = set()
@@ -263,7 +282,12 @@ def _agents(
         name = _name(item.get("name"), "agent", seen)
         kind = str(item.get("kind") or "").strip()
         if not kind:
-            raise ConfigError(f"agent `{name}` needs a `kind` (a Herdr agent kind such as claude).")
+            raise ConfigError(f"agent `{name}` needs a `kind` (an agent kind such as claude).")
+        command = str(item.get("command") or "").strip() or None
+        if multiplexer == "rex" and not command:
+            raise ConfigError(
+                f"agent `{name}` needs a `command` (the program Rex runs, such as claude)."
+            )
         prompt = item.get("prompt") or shared_prompt
         if not prompt:
             raise ConfigError(f"agent `{name}` has no `prompt`, and no top-level `prompt` is set.")
@@ -272,7 +296,7 @@ def _agents(
             raise ConfigError(f"agent `{name}` `args` must be a list of strings.")
         agents.append(Agent(
             name=name, kind=kind, prompt=_expand(str(prompt), base),
-            key=_key(item.get("key"), name, keys), args=tuple(args),
+            key=_key(item.get("key"), name, keys), args=tuple(args), command=command,
         ))
     known = {agent.name for agent in agents}
     groups = []
@@ -348,11 +372,15 @@ def load(path: Path | None = None) -> Config:
     except tomllib.TOMLDecodeError as error:
         raise ConfigError(f"{path}: {error}") from None
     base = path.parent
-    agents, groups, combats = _agents(raw, base)
+    scope = _scope(raw)
+    multiplexer = _multiplexer(raw)
+    agents, groups, combats = _agents(raw, base, multiplexer)
     return Config(
-        scope=_scope(raw),
+        scope=scope,
         work_dir=_expand(raw.get("work_dir", "~/reviewbot-workspaces"), base),
+        multiplexer=multiplexer,
         herdr_workspace=raw.get("herdr_workspace"),
+        rex_session=raw.get("rex_session"),
         agents=agents,
         groups=groups,
         combats=combats,

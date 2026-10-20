@@ -7,12 +7,11 @@ from reviewbot.config import Agent, load
 from reviewbot.github import QueueStatus, ReviewCandidate
 from reviewbot.herdr import (
     AGENT_NAME_MAX,
-    LaunchError,
     _agent_name,
     _pane_ids,
     _start_agent_with_retry,
-    render_prompt,
 )
+from reviewbot.launch import LaunchError, render_prompt
 from reviewbot.run import launch_review
 
 
@@ -73,7 +72,7 @@ def test_launch_review_uses_each_agents_kind_args_and_prompt(tmp_path, monkeypat
     (tmp_path / "codex.md").write_text("codex-only {number}", encoding="utf-8")
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        'watch = ["*"]\nprompt = "review.md"\n'
+        'watch = ["*"]\nmultiplexer = "herdr"\nprompt = "review.md"\n'
         '[[agents]]\nname = "claude"\nkind = "claude"\nargs = ["--model", "opus"]\n'
         '[[agents]]\nname = "codex"\nkind = "codex"\nprompt = "codex.md"\n'
         '[[groups]]\nname = "pair"\nagents = ["claude", "codex"]\n',
@@ -106,7 +105,7 @@ def test_launch_review_uses_each_agents_kind_args_and_prompt(tmp_path, monkeypat
 def test_launch_review_fails_before_checkout_when_prompt_missing(tmp_path, monkeypatch):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        'watch = ["*"]\nprompt = "missing.md"\n[[agents]]\nname = "a"\nkind = "claude"\n',
+        'watch = ["*"]\nmultiplexer = "herdr"\nprompt = "missing.md"\n[[agents]]\nname = "a"\nkind = "claude"\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(

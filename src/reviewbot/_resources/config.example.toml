@@ -1,4 +1,5 @@
-# ReviewBot configuration. GitHub is the source of truth; Herdr hosts the agents.
+# ReviewBot configuration. GitHub is the source of truth; a terminal
+# multiplexer (Herdr or Rex) hosts the agents.
 
 # Which repositories to watch for review requests and your own open PRs.
 #   ["*"]                       every repository you can access
@@ -17,9 +18,17 @@ work_dir = "~/reviewbot-workspaces"
 # verdict templates into prompts/ for per-agent prompts and combat reviews.
 prompt = "prompts/review.md"
 
-# Optional: force new tabs into a particular Herdr workspace ID.
+# Which terminal multiplexer hosts the review agents: "herdr" or "rex".
+# With Rex, every agent also needs a `command`: the program to run in its tab.
+multiplexer = "@MULTIPLEXER@"
+
+# Herdr only, optional: force new tabs into a particular Herdr workspace ID.
 # When omitted, Herdr uses the currently focused workspace.
 # herdr_workspace = "workspace-id"
+
+# Rex only, optional: open review tabs in this Rex session (ID or label).
+# When omitted, ReviewBot uses the Rex session it runs in ($REX_SESSION).
+# rex_session = "reviews"
 
 # Review agents. Each one becomes a TUI shortcut and an `--agent` name.
 @AGENTS@

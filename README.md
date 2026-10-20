@@ -9,8 +9,9 @@ your attention. It shows two queues:
 
 From the review queue, one keypress checks the PR out into an isolated worktree
 and starts one of your configured review agents (Claude Code, Codex, Gemini,
-or any other agent Herdr supports) in a new Herdr tab, primed with the review
-prompt you configure. GitHub remains the source of truth: ReviewBot never
+or any other agent CLI) in a new tab of your terminal multiplexer, primed with
+the review prompt you configure. Two multiplexers are supported:
+[Herdr](#herdr) and [Rex](#rex). GitHub remains the source of truth: ReviewBot never
 submits reviews or posts comments. You read the agent's findings and decide what
 to submit.
 
@@ -21,8 +22,8 @@ to submit.
 | Python 3.11+ and [uv](https://docs.astral.sh/uv/) | runs ReviewBot | `brew install uv` or `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | [GitHub CLI](https://cli.github.com) (`gh`) | all GitHub queries, cloning | `brew install gh` |
 | `git` | worktrees per PR | usually preinstalled |
-| Herdr 0.7+ | terminal workspace that hosts the agent sessions | see the Herdr project docs |
-| One or more agent CLIs Herdr can start | performs the review | per agent, e.g. [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex) |
+| Herdr 0.7+ or [Rex](https://www.superlogical.com/rex/docs) | terminal multiplexer that hosts the agent sessions | see each project's docs |
+| One or more agent CLIs | performs the review | per agent, e.g. [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex) |
 
 ReviewBot does not assume any particular agent: you list the ones you want in
 the config. Browsing the queues needs only `gh`.
@@ -59,21 +60,24 @@ To run without installing, use `uv run reviewbot ...` from the checkout.
    settings). PRs in orgs the token cannot see are silently absent from search
    results.
 
-2. **Install the Herdr agent integration** for each agent you will use, so
-   Herdr can track its state, e.g.:
+2. **With Herdr, install the Herdr agent integration** for each agent you will
+   use, so Herdr can track its state, e.g.:
 
    ```sh
    herdr integration install claude
    ```
 
-3. **Create a config.** `init` asks what to watch if you don't pass `--watch`.
-   Each `--agent KIND[:KEY]` adds an agent of that Herdr kind, named after the
-   kind, bound to an optional TUI key:
+   Rex needs no setup: agents report their state to it directly.
+
+3. **Create a config.** `init` asks what to watch if you don't pass `--watch`,
+   and which multiplexer to use if you don't pass `--multiplexer`. Each
+   `--agent KIND[:KEY]` adds an agent of that kind, named after the kind, bound
+   to an optional TUI key (with Rex, its `command` is set to the kind too):
 
    ```sh
-   reviewbot init --watch acme --agent claude:c --agent codex:x
-   reviewbot init --watch acme/api --watch acme/web --agent gemini:g
-   reviewbot init --watch '*'                     # everything, agents added by hand
+   reviewbot init --watch acme --multiplexer herdr --agent claude:c --agent codex:x
+   reviewbot init --watch acme/api --multiplexer rex --agent claude:c
+   reviewbot init --watch '*' --multiplexer rex   # everything, agents added by hand
    ```
 
    This writes `~/.config/reviewbot/config.toml` and the review templates into
@@ -87,13 +91,49 @@ To run without installing, use `uv run reviewbot ...` from the checkout.
    reviewbot doctor
    ```
 
-   It checks that `gh`, `git`, and `herdr` are on your `PATH`, that `gh` is
-   authenticated, that the config loads, that every configured agent's
+   It checks that `gh`, `git`, and the configured multiplexer are on your
+   `PATH` (and, for Rex, that its server answers and a session is known), that
+   `gh` is authenticated, that the config loads, that every configured agent's
    executable is on your `PATH`, and that every agent and combat prompt file
    exists.
 
-5. **Start or attach to Herdr**, then run `reviewbot tui` inside it. Launched
-   reviews open as new tabs in the focused Herdr workspace.
+5. **Start or attach to your multiplexer**, then run `reviewbot tui` inside it.
+   Launched reviews open as new tabs: in the focused Herdr workspace, or in
+   the Rex session ReviewBot runs in.
+
+## Choosing a multiplexer
+
+`multiplexer` in `config.toml` is required and is either `"herdr"` or `"rex"`.
+
+### Herdr
+
+ReviewBot opens a tab, runs `herdr agent start --kind <kind>` in it, and drives
+the agent by name with `herdr agent prompt` and `herdr agent wait`. Set
+`herdr_workspace` to send tabs to a specific workspace instead of the focused
+one.
+
+### Rex
+
+ReviewBot opens a tab with `rex window new`, running the agent's `command` and
+`args` in the worktree, and drives it by its block ID. Prompts are sent as one
+bracketed paste followed by Return, so multi-line prompts arrive intact.
+
+Rex has no agent registry. Instead, agents report their own state with the
+OSC 7501 program status protocol, which Claude Code and Codex both do. An agent
+is ready when it reports `idle`. A turn is over when its status goes `working`
+(or `blocked`, waiting on you) and then settles on `idle` or `done`. The
+waiting is done inside Rex by two bundled Lua scripts that ReviewBot runs with
+`rex do`: `launch.lua` opens the tab and waits for ready, and `prompt.lua`
+pastes the prompt and waits for the turn. Each registers its status handlers
+before acting, so a fast turn is never missed. An agent that never reports a
+status cannot be driven this way.
+
+Startup dialogs, such as folder trust or Codex's "hooks need review", come
+before the agent reports `idle`. Answer them in the new tab; ReviewBot waits up
+to two minutes for an agent to become ready.
+
+Tabs open in `rex_session` (an ID or label) if set, else in the session
+ReviewBot runs in (`$REX_SESSION`).
 
 ## Choosing what to watch
 
@@ -136,8 +176,9 @@ launched.
 prompt = "prompts/review.md"  # prompt for every agent without its own
 
 [[agents]]
-name = "claude"               # used with --agent and in Herdr tab names
-kind = "claude"               # any `herdr agent start --kind` value
+name = "claude"               # used with --agent and in tab names
+kind = "claude"               # the agent kind
+command = "claude"            # Rex only: the program to run in the tab
 key = "c"                     # TUI shortcut, optional
 args = ["--model", "opus"]    # extra arguments for the agent CLI, optional
 
@@ -161,12 +202,15 @@ key = "b"
 
 - `name`: 1-16 characters of lowercase letters, digits, `-`, or `_`; unique
   across agents, groups, and combats.
-- `kind`: passed to `herdr agent start --kind`, which also names the executable
-  `doctor` looks for. Run `herdr agent start --help` for the supported kinds
-  (claude, codex, gemini, cursor, opencode, copilot, amp, and more).
+- `kind`: the kind of agent, recorded with saved reviews. With Herdr it is
+  passed to `herdr agent start --kind` and names the executable `doctor` looks
+  for. Run `herdr agent start --help` for the supported kinds (claude, codex,
+  gemini, cursor, opencode, copilot, amp, and more).
+- `command`: required with Rex, and ignored by Herdr. The program Rex runs in
+  the tab, and the executable `doctor` looks for.
 - `key`: one letter or digit. `q`, `r`, `o`, `1`, `2`, `a`, and `e` are taken by
   the TUI, and keys must not repeat.
-- `args`: appended after `--` to the agent's command line.
+- `args`: extra arguments for the agent's command line.
 - `prompt`: a file path; relative paths resolve against the config file's
   directory. Every agent needs one, either its own or the top-level `prompt`.
 
@@ -205,7 +249,7 @@ judge_prompt = "prompts/verdict.md"
 - `judge`: receives every review and rebuttal and writes one final review with
   agreed findings, resolved disputes, and findings that did not hold up.
 
-Each agent keeps one Herdr tab and session for the whole combat, so you can
+Each agent keeps one tab and session for the whole combat, so you can
 watch it or step in at any point. Turns are driven by a background
 `reviewbot` process: it sends each prompt, waits for the agent to finish its
 turn (including any time it spends waiting on you for permission), and reads
@@ -283,13 +327,16 @@ without restarting the TUI.
 
 ```toml
 watch = ["acme"]                    # required; ["*"] for everything
+multiplexer = "rex"                 # required; "herdr" or "rex"
 work_dir = "~/reviewbot-workspaces" # cached clones and per-PR worktrees
 prompt = "prompts/review.md"        # shared prompt for agents without their own
-# herdr_workspace = "workspace-id"  # force new tabs into one Herdr workspace
+# herdr_workspace = "workspace-id"  # Herdr: force new tabs into one workspace
+# rex_session = "reviews"           # Rex: open tabs in this session
 
 [[agents]]                          # see "Review agents"
 name = "claude"
 kind = "claude"
+command = "claude"                  # required with Rex
 key = "c"
 
 # [[groups]] and [[combats]]        # see "Review agents" and "Combat review"
@@ -326,7 +373,7 @@ reviewbot tui
 | `e` | (My PRs) re-request review from everyone whose review is stale or requested changes |
 
 The TUI is deliberately a queue picker rather than an agent interface; active
-work happens in Herdr tabs, which the queue marks as `in-progress`.
+work happens in multiplexer tabs, which the queue marks as `in-progress`.
 
 ### Review request statuses
 
@@ -335,7 +382,7 @@ work happens in Herdr tabs, which the queue marks as `in-progress`.
 - `reviewed`: you already reviewed the current head commit.
 - `changes-requested`: you requested changes and nothing has been pushed since.
 - `draft`: the PR is a draft.
-- `in-progress`: a Herdr review tab for it is open.
+- `in-progress`: a review tab for it is open in Herdr or Rex.
 
 Only `ready` and `updated` PRs can be launched.
 
@@ -373,9 +420,9 @@ the configured `watch` list.
    detached worktree at that exact SHA under
    `<work_dir>/worktrees/<owner>-<repo>/pr-<n>-<sha>`.
 3. For each agent in the first phase (one agent, every member of a group, or
-   a combat's first speakers), opens a Herdr tab named
-   `<repo> #<n> <agent> review` and runs
-   `herdr agent start --kind <kind> -- <args>` there.
+   a combat's first speakers), opens a tab named `<repo> #<n> <agent> review`
+   and starts the agent there: `herdr agent start --kind <kind> -- <args>`
+   with Herdr, or `<command> <args>` with Rex, waiting until it reports ready.
 4. Without combats or `[output]`, sends each agent its rendered prompt and is
    done. Otherwise, starts the background runner described under "Combat
    review", which opens later agents' tabs as their turns come up.

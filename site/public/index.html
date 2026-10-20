@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ReviewBot</title>
-<meta name="description" content="A terminal UI for your GitHub review queue. Check out any PR at its exact head and hand it to Claude Code, Codex, or any agent Herdr can run, with your own review prompt.">
+<meta name="description" content="A terminal UI for your GitHub review queue. Check out any PR at its exact head and hand it to Claude Code, Codex, or any agent CLI running in Herdr or Rex, with your own review prompt.">
 <meta property="og:title" content="ReviewBot: your review queue, handed to your agents">
-<meta property="og:description" content="A terminal UI for your GitHub review queue. One key checks out the PR and starts the review agent of your choice in Herdr.">
+<meta property="og:description" content="A terminal UI for your GitHub review queue. One key checks out the PR and starts the review agent of your choice in Herdr or Rex.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://reviewbot.wecodefire.com/">
 <meta property="og:image" content="https://reviewbot.wecodefire.com/tui.svg">
@@ -113,6 +113,18 @@ h1 {
 h1 em { font-style: normal; color: var(--accent); }
 .lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 640px; margin: 0 auto 32px; }
 .cta { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-bottom: 28px; }
+
+.works-with {
+  display: flex; align-items: center; gap: 16px; max-width: 640px; margin: 20px auto 0;
+  padding: 14px 18px; border-radius: 14px; text-align: left; text-decoration: none;
+  background: var(--surface); border: 1px solid var(--accent); box-shadow: var(--shadow);
+  font-size: 15px; line-height: 1.5; color: var(--muted);
+}
+.works-with:hover { background: var(--accent-soft); }
+.works-with img { width: 48px; height: 48px; flex: none; border-radius: 22.5%; }
+.works-with strong { color: var(--text); }
+.works-with code { font-size: 13px; color: var(--text); white-space: nowrap; }
+.req-logo { width: 18px; height: 18px; border-radius: 22.5%; vertical-align: -3px; margin-left: 4px; }
 
 .install {
   display: flex; align-items: center; gap: 12px; max-width: 640px; margin: 0 auto;
@@ -246,8 +258,8 @@ footer a:hover { color: var(--text); }
     <h1>Your review queue, <em>handed to your agents.</em></h1>
     <p class="lede">
       ReviewBot is a terminal UI for the pull requests waiting on you. Pick one, press a key,
-      and it's checked out at its exact head commit with Claude Code, Codex, or any agent
-      Herdr can run already reviewing it, using your prompt. You read the findings. You decide
+      and it's checked out at its exact head commit with Claude Code, Codex, or any other agent
+      already reviewing it in a Herdr or Rex tab, using your prompt. You read the findings. You decide
       what gets posted.
     </p>
     <div class="cta">
@@ -258,6 +270,11 @@ footer a:hover { color: var(--text); }
       <code><span class="prompt">$</span>uv tool install git+https://github.com/mysticcoders/reviewbot</code>
       <button class="copy" type="button" data-copy="uv tool install git+https://github.com/mysticcoders/reviewbot">Copy</button>
     </div>
+    <a class="works-with" href="https://www.superlogical.com/rex/docs">
+      <img src="rex-icon.webp" width="48" height="48" alt="Rex">
+      <span><strong>Now runs in Rex, too.</strong> Set <code>multiplexer = "rex"</code> and reviews
+      open as Rex tabs, driven by each agent's own live status. Nothing extra to install.</span>
+    </a>
   </div>
 
   <div class="wrap shot">
@@ -289,7 +306,7 @@ footer a:hover { color: var(--text); }
         </div>
         <div class="step">
           <h3>Review alongside the agent</h3>
-          <p>A new Herdr tab opens with your agent running in the worktree and your review prompt
+          <p>A new tab opens in Herdr or Rex with your agent running in the worktree and your review prompt
           already sent. Ask follow-ups, run tests, then submit the review yourself.</p>
         </div>
       </div>
@@ -311,7 +328,7 @@ footer a:hover { color: var(--text); }
         <div class="feature">
           <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg></div>
           <h3>Bring your own agents</h3>
-          <p>Any agent kind Herdr supports, each with its own shortcut key and CLI arguments. Group them to get two independent reviews of one PR.</p>
+          <p>Any agent CLI, each with its own shortcut key and arguments. Group them to get two independent reviews of one PR.</p>
         </div>
         <div class="feature">
           <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></svg></div>
@@ -347,7 +364,7 @@ footer a:hover { color: var(--text); }
           and the TUI builds its shortcuts from it.</p>
         </div>
         <ul class="checklist">
-          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg><span><strong>Any Herdr kind:</strong> Claude Code, Codex, Gemini, Cursor, OpenCode, Copilot, Amp, and more.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg><span><strong>Any agent:</strong> Claude Code, Codex, Gemini, Cursor, OpenCode, Copilot, Amp, and more.</span></li>
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg><span><strong>Same agent, different settings:</strong> a quick Codex pass on <code>x</code>, a high-effort one on <code>d</code>.</span></li>
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg><span><strong>Groups:</strong> launch several agents on one PR, each in its own tab.</span></li>
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg><span><strong>Checked up front:</strong> <code>reviewbot doctor</code> confirms every agent is installed and every prompt file exists.</span></li>
@@ -356,6 +373,7 @@ footer a:hover { color: var(--text); }
       <div>
         <p class="code-label">~/.config/reviewbot/config.toml</p>
 <pre class="code"><code><span class="k">watch</span> = [<span class="s">"acme"</span>, <span class="s">"someone/tool"</span>]
+<span class="k">multiplexer</span> = <span class="s">"herdr"</span>
 <span class="k">prompt</span> = <span class="s">"review.md"</span>
 
 <span class="h">[[agents]]</span>
@@ -405,7 +423,7 @@ footer a:hover { color: var(--text); }
             <div class="row"><dt>Python 3.11+ and uv</dt><dd>Installs and runs ReviewBot. <a href="https://docs.astral.sh/uv/">Get uv</a>.</dd></div>
             <div class="row"><dt>GitHub CLI</dt><dd>All GitHub queries and clones go through <code>gh</code>, using the account it's logged in as. <a href="https://cli.github.com">Get gh</a>.</dd></div>
             <div class="row"><dt>git</dt><dd>Per-PR worktrees.</dd></div>
-            <div class="row"><dt>Herdr 0.7+</dt><dd>The terminal workspace your review agents run in. <a href="https://herdr.dev">herdr.dev</a>.</dd></div>
+            <div class="row"><dt>Herdr 0.7+ or Rex<img class="req-logo" src="rex-icon.webp" alt=""></dt><dd>The terminal multiplexer your review agents run in, chosen with <code>multiplexer</code> in the config. <a href="https://herdr.dev">herdr.dev</a> &middot; <a href="https://www.superlogical.com/rex/docs">Rex docs</a>.</dd></div>
             <div class="row"><dt>Agent CLIs</dt><dd>Whichever agents you configure, such as Claude Code or Codex.</dd></div>
           </dl>
         </div>
@@ -416,13 +434,13 @@ uv tool install git+https://github.com/mysticcoders/reviewbot
 <span class="c"># sign in to GitHub</span>
 gh auth login
 
-<span class="c"># write a config with what to watch and your agents</span>
-reviewbot init --watch acme --agent claude:c --agent codex:x
+<span class="c"># write a config: what to watch, multiplexer, agents</span>
+reviewbot init --watch acme --multiplexer herdr --agent claude:c --agent codex:x
 
-<span class="c"># check gh, git, herdr, agents, and prompts</span>
+<span class="c"># check gh, git, your multiplexer, agents, and prompts</span>
 reviewbot doctor
 
-<span class="c"># inside Herdr</span>
+<span class="c"># inside Herdr or Rex</span>
 reviewbot tui</code></pre>
         </div>
       </div>

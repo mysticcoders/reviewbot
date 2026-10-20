@@ -1,8 +1,9 @@
-"""ReviewBot command line: GitHub review queue to interactive Herdr agents."""
+"""ReviewBot command line: GitHub review queue to interactive agents in Herdr or Rex."""
 
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 from importlib import resources
@@ -15,7 +16,8 @@ from rich.table import Table
 from . import __version__
 from . import config as cfg
 from .github import GhError, ReviewCandidate, authored_prs, review_queue
-from .herdr import LaunchError, active_review_keys
+from .launch import LaunchError
+from .multiplexer import active_review_keys
 from .run import collects, execute, launch_review, list_runs
 
 
@@ -95,7 +97,8 @@ def _do_launch(config: cfg.Config, candidate: ReviewCandidate, agent: str) -> No
         raise click.ClickException(str(error)) from None
     for result in results:
         click.secho(
-            f"started {result.agent} in Herdr tab `{result.tab_label}` ({result.checkout})",
+            f"started {result.agent} in {config.multiplexer_name} tab "
+            f"`{result.tab_label}` ({result.checkout})",
             fg="green",
         )
     if collects(config, agent):
@@ -105,7 +108,7 @@ def _do_launch(config: cfg.Config, candidate: ReviewCandidate, agent: str) -> No
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__, prog_name="reviewbot")
 def cli() -> None:
-    """Review requested PRs interactively with your configured agents in Herdr."""
+    """Review requested PRs interactively with your configured agents in Herdr or Rex."""
 
 
 PROMPT_TEMPLATES = (
@@ -125,24 +128,30 @@ def _agent_spec(spec: str) -> tuple[str, str | None]:
     return kind, key or None
 
 
-def render_config(scope: cfg.Scope, agents: list[tuple[str, str | None]]) -> str:
-    """Build a starter config.toml for the given watch scope and agents."""
+def render_config(
+    scope: cfg.Scope, multiplexer: str, agents: list[tuple[str, str | None]]
+) -> str:
+    """Build a starter config.toml for the given watch scope, multiplexer, and agents."""
     entries = ["*"] if scope.is_all else [*scope.owners, *scope.repos]
+    rex = multiplexer == "rex"
     agent_blocks = "\n".join(
         f'[[agents]]\nname = "{kind}"\nkind = "{kind}"\n'
+        + (f'command = "{kind}"\n' if rex else "")
         + (f'key = "{key}"\n' if key else "")
         for kind, key in agents
     ) or (
         "# [[agents]]\n"
-        '# name = "claude"        # used with --agent and in Herdr tab names\n'
-        '# kind = "claude"        # any `herdr agent start --kind` value\n'
+        '# name = "claude"        # used with --agent and in tab names\n'
+        '# kind = "claude"        # the agent kind (Herdr: any `herdr agent start --kind`)\n'
+        + ('# command = "claude"     # the program Rex runs in the tab\n' if rex else "")
+        +
         '# key = "c"              # TUI shortcut (single letter or digit)\n'
         '# args = ["--model", "opus"]   # extra arguments for the agent CLI\n'
         '# prompt = "claude.md"   # overrides the top-level prompt\n'
     )
     return _resource_text("config.example.toml").replace(
         "@WATCH@", _toml_list(entries)
-    ).replace("@AGENTS@\n", agent_blocks)
+    ).replace("@MULTIPLEXER@", multiplexer).replace("@AGENTS@\n", agent_blocks)
 
 
 @cli.command()
@@ -153,21 +162,31 @@ def render_config(scope: cfg.Scope, agents: list[tuple[str, str | None]]) -> str
 )
 @click.option(
     "--agent", "agent_specs", multiple=True, metavar="KIND[:KEY]",
-    help="Add a review agent of this Herdr kind, with an optional TUI key (repeatable).",
+    help="Add a review agent of this kind, with an optional TUI key (repeatable).",
 )
-def init(force: bool, watch: tuple[str, ...], agent_specs: tuple[str, ...]) -> None:
+@click.option(
+    "--multiplexer", type=click.Choice(list(cfg.MULTIPLEXERS)),
+    help="Terminal multiplexer that hosts the review agents.",
+)
+def init(
+    force: bool, watch: tuple[str, ...], agent_specs: tuple[str, ...], multiplexer: str | None
+) -> None:
     """Write ~/.config/reviewbot/config.toml and the review prompt it points at."""
     if not watch:
         answer = click.prompt(
             "Owners or OWNER/REPO entries to watch (comma-separated, * for everything)"
         )
         watch = tuple(item for item in answer.replace(",", " ").split() if item)
+    if not multiplexer:
+        multiplexer = click.prompt(
+            "Terminal multiplexer that hosts the agents", type=click.Choice(list(cfg.MULTIPLEXERS)),
+        )
     try:
         scope = cfg.Scope.parse(watch)
     except cfg.ConfigError as error:
         raise click.ClickException(str(error)) from None
     agents = [_agent_spec(spec) for spec in agent_specs]
-    files = [(cfg.CONFIG_PATH, render_config(scope, agents))]
+    files = [(cfg.CONFIG_PATH, render_config(scope, multiplexer, agents))]
     files += [
         (cfg.CONFIG_PATH.parent / "prompts" / name, _resource_text(f"prompts/{name}"))
         for name in PROMPT_TEMPLATES
@@ -207,11 +226,31 @@ def _check(label: str, ok: bool, detail: str) -> bool:
     return ok
 
 
+def _multiplexer_check(config: cfg.Config) -> bool:
+    """Check the configured multiplexer is installed and, for Rex, that its server answers."""
+    tool = config.multiplexer
+    path = shutil.which(tool)
+    if not path:
+        return _check(tool, False, "not on PATH")
+    if tool != "rex":
+        return _check(tool, True, path)
+    whoami = subprocess.run(
+        ["rex", "whoami", "--json"], capture_output=True, text=True, check=False
+    )
+    if whoami.returncode:
+        return _check("rex", False, whoami.stderr.strip() or "Rex server not reachable")
+    session = config.rex_session or os.environ.get("REX_SESSION")
+    where = f"tabs open in session {session}" if session else (
+        "no session: set `rex_session` or run inside Rex"
+    )
+    return _check("rex", bool(session), f"{path} · {where}")
+
+
 @cli.command()
 def doctor() -> None:
-    """Check that gh, git, Herdr, the config, and each configured agent are ready."""
+    """Check that gh, git, the multiplexer, the config, and each configured agent are ready."""
     required = []
-    for tool in ("gh", "git", "herdr"):
+    for tool in ("gh", "git"):
         path = shutil.which(tool)
         required.append(_check(tool, bool(path), path or "not on PATH"))
     if shutil.which("gh"):
@@ -230,13 +269,15 @@ def doctor() -> None:
     required.append(_check(
         "config", True, f"{config.path} · watching {config.scope.describe()}",
     ))
+    required.append(_multiplexer_check(config))
     if not config.agents:
         required.append(_check("agents", False, "no [[agents]] configured"))
     for agent in config.agents:
-        path = shutil.which(agent.kind)
+        program = agent.command if config.multiplexer == "rex" else agent.kind
+        path = shutil.which(program)
         required.append(_check(
             f"agent {agent.name}", bool(path),
-            path or f"`{agent.kind}` not on PATH",
+            path or f"`{program}` not on PATH",
         ))
         required.append(_check(
             f"agent {agent.name} prompt", agent.prompt.is_file(), str(agent.prompt),
@@ -262,7 +303,8 @@ def agents_command() -> None:
     for heading in ("Name", "Key", "Launches", "Prompt"):
         table.add_column(heading)
     for agent in config.agents:
-        launches = " ".join([agent.kind, *agent.args])
+        program = agent.command if config.multiplexer == "rex" else agent.kind
+        launches = " ".join([program, *agent.args])
         table.add_row(agent.name, agent.key or "", launches, str(agent.prompt))
     for group in config.groups:
         table.add_row(group.name, group.key or "", ", ".join(group.agents), "per agent")
@@ -317,7 +359,7 @@ def status_command(watch: tuple[str, ...], watch_all: bool) -> None:
     """List PRs currently requesting your review."""
     config = _load(watch, watch_all)
     candidates = _queue(config)
-    active = active_review_keys(candidates)
+    active = active_review_keys(config, candidates)
     table = Table(title=f"Review requests in {config.scope.describe()}")
     for heading in ("Status", "PR", "Checks", "Request", "Author", "Title"):
         table.add_column(heading)
@@ -368,7 +410,7 @@ def next_command(
     if agent is not None:
         _require_agent(config, agent)
     queue = _queue(config)
-    active = active_review_keys(queue)
+    active = active_review_keys(config, queue)
     candidates = [
         candidate for candidate in queue
         if candidate.actionable and candidate.key not in active
@@ -382,7 +424,7 @@ def next_command(
         names = ", ".join(config.target_names) or "none configured"
         click.echo(f"Pass --agent to launch it (agents: {names}).")
         return
-    if yes or click.confirm(f"Launch {agent} in a new Herdr tab?"):
+    if yes or click.confirm(f"Launch {agent} in a new {config.multiplexer_name} tab?"):
         _do_launch(config, candidate, agent)
 
 

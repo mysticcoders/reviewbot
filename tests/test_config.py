@@ -30,8 +30,10 @@ key = "b"
 '''
 
 
-def write_config(tmp_path: Path, text: str) -> Path:
+def write_config(tmp_path: Path, text: str, multiplexer: str | None = "herdr") -> Path:
     path = tmp_path / "config.toml"
+    if multiplexer:
+        text = f'multiplexer = "{multiplexer}"\n' + text
     path.write_text(text, encoding="utf-8")
     return path
 
@@ -199,3 +201,24 @@ def test_invalid_combat(tmp_path, snippet, message):
 def test_output_needs_dir(tmp_path):
     with pytest.raises(ConfigError, match="needs `dir`"):
         load(write_config(tmp_path, 'watch = ["*"]\n[output]\n'))
+
+
+def test_multiplexer_is_required_and_validated(tmp_path):
+    with pytest.raises(ConfigError, match='`multiplexer` must be "herdr" or "rex"'):
+        load(write_config(tmp_path, 'watch = ["*"]\n', multiplexer=None))
+    with pytest.raises(ConfigError, match="`multiplexer` must be"):
+        load(write_config(tmp_path, 'watch = ["*"]\n', multiplexer="tmux"))
+
+
+def test_rex_agents_need_a_command(tmp_path):
+    agent = '[[agents]]\nname = "c"\nkind = "claude"\nprompt = "p.md"\n'
+    with pytest.raises(ConfigError, match="agent `c` needs a `command`"):
+        load(write_config(tmp_path, 'watch = ["*"]\n' + agent, multiplexer="rex"))
+    config = load(write_config(
+        tmp_path, 'watch = ["*"]\nrex_session = "reviews"\n' + agent + 'command = "claude"\n',
+        multiplexer="rex",
+    ))
+    assert (config.multiplexer, config.multiplexer_name, config.rex_session) == (
+        "rex", "Rex", "reviews",
+    )
+    assert config.agents[0].command == "claude"

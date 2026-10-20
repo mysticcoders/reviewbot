@@ -13,15 +13,8 @@ from pathlib import Path
 from . import config as cfg
 from .config import Config, ConfigError
 from .github import QueueStatus, ReviewCandidate
-from .herdr import (
-    LaunchError,
-    LaunchResult,
-    open_session,
-    prepare_checkout,
-    prompt_and_wait,
-    render_prompt,
-    send_prompt,
-)
+from .launch import LaunchError, LaunchResult, prepare_checkout, render_prompt
+from .multiplexer import open_session, prompt_and_wait, send_prompt
 
 ROLE_TITLES = {
     "walkthrough": "Walkthrough",
@@ -164,7 +157,7 @@ def _candidate_from(data: dict) -> ReviewCandidate:
 
 
 def launch_review(config: Config, candidate: ReviewCandidate, *, agent: str) -> list[LaunchResult]:
-    """Check out the PR, start the first agents in Herdr, and hand off to the runner if needed.
+    """Check out the PR, start the first agents, and hand off to the runner if needed.
 
     Plain launches send their prompts directly. Combats, and any launch while `[output]` is
     configured, start a detached `reviewbot run-plan` process that sends each prompt, waits
@@ -193,7 +186,7 @@ def launch_review(config: Config, candidate: ReviewCandidate, *, agent: str) -> 
     ]
     if not background:
         for result in results:
-            send_prompt(result.agent_name, prompts[result.agent])
+            send_prompt(config, result.handle, prompts[result.agent])
         return results
 
     run_dir = config.work_dir / "runs" / _run_id(candidate)
@@ -203,7 +196,7 @@ def launch_review(config: Config, candidate: ReviewCandidate, *, agent: str) -> 
         "launcher": agent,
         "candidate": _candidate_dict(candidate),
         "checkout": str(checkout),
-        "sessions": {result.agent: result.agent_name for result in results},
+        "sessions": {result.agent: result.handle for result in results},
     }, indent=2), encoding="utf-8")
     _write_state(run_dir, {
         "run": run_dir.name, "key": candidate.key, "title": candidate.title,
@@ -303,14 +296,14 @@ def execute(run_dir: Path) -> None:
                     result = open_session(
                         config, candidate, agent=config.agent(step.agent), checkout=checkout
                     )
-                    sessions[step.agent] = result.agent_name
+                    sessions[step.agent] = result.handle
                 state["steps"][step.index]["status"] = "running"
             _write_state(run_dir, state)
 
             def run_step(step: Step) -> str:
                 relative = f"{OUTPUT_DIR}/{run_dir.name}/{step.filename}"
                 prompt = step_prompt(config, launcher, candidate, step, steps, outputs, relative)
-                return _collect(sessions[step.agent], prompt, checkout / relative)
+                return _collect(config, sessions[step.agent], prompt, checkout / relative)
 
             with ThreadPoolExecutor(max_workers=len(phase)) as pool:
                 futures = [pool.submit(run_step, step) for step in phase]
@@ -345,12 +338,12 @@ def execute(run_dir: Path) -> None:
     _write_state(run_dir, state)
 
 
-def _collect(agent_name: str, prompt: str, path: Path) -> str:
+def _collect(config: Config, agent_name: str, prompt: str, path: Path) -> str:
     """Prompt an agent, wait for its turn to end, and read the review it wrote; nudge once."""
-    prompt_and_wait(agent_name, prompt)
+    prompt_and_wait(config, agent_name, prompt)
     if not path.is_file():
         prompt_and_wait(
-            agent_name,
+            config, agent_name,
             f"You have not written your review to `{path}` yet. Write the complete review "
             "there now as Markdown; it is the only file you may create or change.",
         )

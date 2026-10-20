@@ -7,7 +7,7 @@ import pytest
 from reviewbot import run
 from reviewbot.config import load
 from reviewbot.github import QueueStatus, ReviewCandidate
-from reviewbot.herdr import LaunchResult
+from reviewbot.launch import LaunchResult
 
 PROMPTS = {
     "review.md": "REVIEW {key} by {agent}",
@@ -32,7 +32,7 @@ def make_config(tmp_path: Path, combats: str = "", output: bool = False):
     for name, text in PROMPTS.items():
         (tmp_path / name).write_text(text, encoding="utf-8")
     text = (
-        f'watch = ["*"]\nprompt = "review.md"\nwork_dir = "{tmp_path / "work"}"\n'
+        f'watch = ["*"]\nmultiplexer = "herdr"\nprompt = "review.md"\nwork_dir = "{tmp_path / "work"}"\n'
         '[[agents]]\nname = "a"\nkind = "claude"\n'
         '[[agents]]\nname = "b"\nkind = "codex"\n'
         '[[agents]]\nname = "j"\nkind = "gemini"\n'
@@ -119,9 +119,9 @@ class FakeHerdr:
         self.silent = set(silent)
 
     def open_session(self, config, cand, *, agent, checkout):
-        return LaunchResult(agent.name, f"tab {agent.name}", "p", checkout, f"rb-{agent.name}")
+        return LaunchResult(agent.name, f"tab {agent.name}", checkout, f"rb-{agent.name}")
 
-    def prompt_and_wait(self, agent_name, text):
+    def prompt_and_wait(self, config, agent_name, text):
         self.prompts.append((agent_name, text))
         match = re.search(r"Markdown to `([^`]+)`", text)
         if match and agent_name not in self.silent:
@@ -201,7 +201,7 @@ def test_plain_launch_without_output_sends_prompts_directly(tmp_path, monkeypatc
     sent = []
     monkeypatch.setattr(run, "prepare_checkout", lambda c, cand: tmp_path)
     monkeypatch.setattr(run, "open_session", FakeHerdr().open_session)
-    monkeypatch.setattr(run, "send_prompt", lambda name, text: sent.append((name, text)))
+    monkeypatch.setattr(run, "send_prompt", lambda config, name, text: sent.append((name, text)))
     monkeypatch.setattr(run.subprocess, "Popen", lambda *a, **k: pytest.fail("runner started"))
     run.launch_review(config, candidate(), agent="pair")
     assert sent == [("rb-a", "REVIEW acme/demo#12 by a"), ("rb-b", "REVIEW acme/demo#12 by b")]

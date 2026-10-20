@@ -31,7 +31,8 @@ from ..github import (
     request_reviewers,
     review_queue,
 )
-from ..herdr import LaunchError, active_review_keys
+from ..launch import LaunchError
+from ..multiplexer import active_review_keys
 from ..run import collects, launch_review
 
 
@@ -112,7 +113,7 @@ class ReviewerPicker(ModalScreen[list[str] | None]):
 
 
 class ReviewQueueApp(App[None]):
-    """Browse requested reviews and the user's own PRs, handing reviews to Herdr agents."""
+    """Browse requested reviews and the user's own PRs, handing reviews to agents."""
 
     CSS = """
     Screen { layout: vertical; }
@@ -259,7 +260,7 @@ class ReviewQueueApp(App[None]):
         self._status_line.update(f"Fetching review requests in {self.config.scope.describe()}…")
         try:
             candidates = await review_queue(self.config.scope)
-            active = await asyncio.to_thread(active_review_keys, candidates)
+            active = await asyncio.to_thread(active_review_keys, self.config, candidates)
         except (GhError, LaunchError, OSError) as error:
             self._status_line.update(f"[red]Refresh failed:[/red] {error}")
             return
@@ -380,7 +381,7 @@ class ReviewQueueApp(App[None]):
         if candidate is None or self._launching:
             return
         if candidate.key in self._active:
-            self._status_line.update(f"{candidate.key} already has a Herdr review tab")
+            self._status_line.update(f"{candidate.key} already has a {self.config.multiplexer_name} review tab")
             return
         if not candidate.actionable:
             self._status_line.update(

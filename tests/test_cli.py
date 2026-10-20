@@ -76,3 +76,68 @@ def test_init_for_rex_writes_each_agents_command(tmp_path, monkeypatch):
     config = cfg.load(tmp_path / "config.toml")
     assert config.multiplexer == "rex"
     assert [(a.kind, a.command, a.key) for a in config.agents] == [("codex", "codex", "x")]
+
+
+OLD_CONFIG = '''# ReviewBot configuration.
+watch = ["acme"]
+work_dir = "~/reviewbot-workspaces"
+prompt = "prompts/review.md"
+
+# Review agents. Each one becomes a TUI shortcut and an `--agent` name.
+[[agents]]
+name = "claude"
+kind = "claude"
+key = "c"
+
+[[agents]]
+name = "codex"
+kind = "codex"
+key = "x"
+args = ["-c", "model_reasoning_effort=high"]
+
+# [[groups]]
+# name = "pair"
+'''
+
+
+def doctor(tmp_path, monkeypatch, stdin: str):
+    """Run doctor on a pre-0.2 config at a (pretend) terminal, with no tools installed."""
+    (tmp_path / "config.toml").write_text(OLD_CONFIG, encoding="utf-8")
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: None)
+    return run(tmp_path, monkeypatch, "doctor", stdin=stdin)
+
+
+def test_doctor_adds_a_missing_herdr_multiplexer_and_keeps_a_backup(tmp_path, monkeypatch):
+    result = doctor(tmp_path, monkeypatch, "y\nherdr\n")
+    assert "has no `multiplexer`" in result.output
+    assert "updated" in result.output
+    text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert text.index('multiplexer = "herdr"') < text.index("# Review agents.")
+    assert (tmp_path / "config.toml.bak").read_text(encoding="utf-8") == OLD_CONFIG
+    config = cfg.load(tmp_path / "config.toml")
+    assert config.multiplexer == "herdr"
+    assert [a.command for a in config.agents] == [None, None]
+
+
+def test_doctor_switching_to_rex_adds_each_agents_command(tmp_path, monkeypatch):
+    result = doctor(tmp_path, monkeypatch, "y\nrex\ny\n\n/opt/bin/codex\n")
+    assert "missing for: claude, codex" in result.output
+    config = cfg.load(tmp_path / "config.toml")
+    assert config.multiplexer == "rex"
+    assert [(a.name, a.command, a.args) for a in config.agents] == [
+        ("claude", "claude", ()),
+        ("codex", "/opt/bin/codex", ("-c", "model_reasoning_effort=high")),
+    ]
+    assert "# [[groups]]" in (tmp_path / "config.toml").read_text(encoding="utf-8")
+
+
+def test_doctor_changes_nothing_when_declined_or_not_at_a_terminal(tmp_path, monkeypatch):
+    doctor(tmp_path, monkeypatch, "n\n")
+    assert (tmp_path / "config.toml").read_text(encoding="utf-8") == OLD_CONFIG
+    assert not (tmp_path / "config.toml.bak").exists()
+    monkeypatch.setattr(cli, "_interactive", lambda: False)
+    result = run(tmp_path, monkeypatch, "doctor")
+    assert "`multiplexer` is missing" in result.output
+    assert "run `reviewbot doctor` to add it" in result.output
+    assert not (tmp_path / "config.toml.bak").exists()

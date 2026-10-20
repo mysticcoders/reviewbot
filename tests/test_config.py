@@ -1,8 +1,19 @@
+import tomllib
 from pathlib import Path
 
 import pytest
 
-from reviewbot.config import Agent, Checkout, ConfigError, Group, Scope, load
+from reviewbot.config import (
+    Agent,
+    Checkout,
+    ConfigError,
+    Group,
+    Scope,
+    add_commands,
+    add_multiplexer,
+    agents_missing_command,
+    load,
+)
 
 AGENTS = '''
 prompt = "review.md"
@@ -204,7 +215,7 @@ def test_output_needs_dir(tmp_path):
 
 
 def test_multiplexer_is_required_and_validated(tmp_path):
-    with pytest.raises(ConfigError, match='`multiplexer` must be "herdr" or "rex"'):
+    with pytest.raises(ConfigError, match="`multiplexer` is missing"):
         load(write_config(tmp_path, 'watch = ["*"]\n', multiplexer=None))
     with pytest.raises(ConfigError, match="`multiplexer` must be"):
         load(write_config(tmp_path, 'watch = ["*"]\n', multiplexer="tmux"))
@@ -222,3 +233,22 @@ def test_rex_agents_need_a_command(tmp_path):
         "rex", "Rex", "reviews",
     )
     assert config.agents[0].command == "claude"
+
+
+def test_add_multiplexer_without_tables_appends_a_loadable_line(tmp_path):
+    text = add_multiplexer('watch = ["*"]', "rex")
+    assert load(write_config(tmp_path, text, multiplexer=None)).multiplexer == "rex"
+
+
+def test_add_commands_only_touches_the_named_agents(tmp_path):
+    text = (
+        'watch = ["*"]\nmultiplexer = "rex"\nprompt = "p.md"\n'
+        '[[agents]]\nname = "a"\nkind = "claude"\ncommand = "claude"\n'
+        '[[agents]]\nkind = "codex"\nname = "b"\n'
+        '[output]\ndir = "out"\n'
+    )
+    raw = tomllib.loads(text)
+    assert agents_missing_command(raw) == [("b", "codex")]
+    config = load(write_config(tmp_path, add_commands(text, {"b": "codex"}), multiplexer=None))
+    assert [a.command for a in config.agents] == ["claude", "codex"]
+    assert config.output is not None

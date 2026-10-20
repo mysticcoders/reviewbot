@@ -262,8 +262,13 @@ def _name(value: object, kind: str, seen: set[str]) -> str:
 def _multiplexer(raw: dict) -> str:
     """Read the required `multiplexer`: which terminal multiplexer hosts the agents."""
     value = raw.get("multiplexer")
+    choices = " or ".join(f'"{name}"' for name in MULTIPLEXERS)
+    if value is None:
+        raise ConfigError(
+            f"`multiplexer` is missing: set it to {choices} at the top of the config, "
+            "or run `reviewbot doctor` to add it."
+        )
     if value not in MULTIPLEXERS:
-        choices = " or ".join(f'"{name}"' for name in MULTIPLEXERS)
         raise ConfigError(
             f"`multiplexer` must be {choices}: the terminal multiplexer that hosts review agents."
         )
@@ -286,7 +291,8 @@ def _agents(
         command = str(item.get("command") or "").strip() or None
         if multiplexer == "rex" and not command:
             raise ConfigError(
-                f"agent `{name}` needs a `command` (the program Rex runs, such as claude)."
+                f"agent `{name}` needs a `command` (the program Rex runs, such as claude); "
+                "run `reviewbot doctor` to add it."
             )
         prompt = item.get("prompt") or shared_prompt
         if not prompt:
@@ -388,3 +394,60 @@ def load(path: Path | None = None) -> Config:
         output=_output(raw, base),
         path=path,
     )
+
+
+TABLE_HEADER = re.compile(r"\s*\[")
+NAME_LINE = re.compile(r'\s*name\s*=\s*"([^"]*)"')
+KIND_LINE = re.compile(r"\s*kind\s*=")
+
+
+def add_multiplexer(text: str, multiplexer: str) -> str:
+    """Insert a top-level `multiplexer` line before the first table and its leading comments.
+
+    Top-level keys must come before any table, so the line goes above the first
+    `[...]` header, and above the comment block that introduces it.
+    """
+    lines = text.splitlines(keepends=True)
+    index = next((i for i, line in enumerate(lines) if TABLE_HEADER.match(line)), len(lines))
+    while index > 0 and lines[index - 1].lstrip().startswith("#"):
+        index -= 1
+    entry = (
+        '# Which terminal multiplexer hosts the review agents: "herdr" or "rex".\n'
+        f'multiplexer = "{multiplexer}"\n\n'
+    )
+    if index == len(lines) and lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    return "".join([*lines[:index], entry, *lines[index:]])
+
+
+def agents_missing_command(raw: dict) -> list[tuple[str, str]]:
+    """The (name, kind) of each `[[agents]]` entry that has no `command`."""
+    return [
+        (str(item.get("name") or ""), str(item.get("kind") or ""))
+        for item in raw.get("agents", [])
+        if not str(item.get("command") or "").strip()
+    ]
+
+
+def add_commands(text: str, commands: dict[str, str]) -> str:
+    """Insert `command = "..."` into each named `[[agents]]` table, after its `kind` line."""
+    lines = text.splitlines(keepends=True)
+    tables: list[tuple[int, int]] = []
+    start = None
+    for i, line in enumerate(lines):
+        if TABLE_HEADER.match(line):
+            if start is not None:
+                tables.append((start, i))
+            start = i if line.strip() == "[[agents]]" else None
+    if start is not None:
+        tables.append((start, len(lines)))
+    for begin, end in reversed(tables):
+        body = range(begin + 1, end)
+        name = next((m.group(1) for i in body if (m := NAME_LINE.match(lines[i]))), None)
+        if name not in commands:
+            continue
+        anchor = next((i for i in body if KIND_LINE.match(lines[i])), begin)
+        if not lines[anchor].endswith("\n"):
+            lines[anchor] += "\n"
+        lines.insert(anchor + 1, f'command = "{commands[name]}"\n')
+    return "".join(lines)

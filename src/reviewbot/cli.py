@@ -6,6 +6,8 @@ import asyncio
 import os
 import shutil
 import subprocess
+import sys
+import tomllib
 from importlib import resources
 from pathlib import Path
 
@@ -246,9 +248,57 @@ def _multiplexer_check(config: cfg.Config) -> bool:
     return _check("rex", bool(session), f"{path} · {where}")
 
 
+def _interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _repair_config(path: Path) -> None:
+    """Offer to add what newer versions require: `multiplexer`, and each agent's Rex `command`.
+
+    Only the missing lines are added, so comments and layout are kept; the previous file
+    is saved beside it as config.toml.bak.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+        raw = tomllib.loads(text)
+    except (OSError, tomllib.TOMLDecodeError):
+        return
+    updated = text
+    multiplexer = raw.get("multiplexer")
+    if multiplexer is None:
+        click.secho(f"{path} has no `multiplexer`, which this version requires.", fg="yellow")
+        if click.confirm("Add it now?", default=True):
+            multiplexer = click.prompt(
+                "Terminal multiplexer that hosts the agents",
+                type=click.Choice(list(cfg.MULTIPLEXERS)),
+            )
+            updated = cfg.add_multiplexer(updated, multiplexer)
+    missing = cfg.agents_missing_command(raw) if multiplexer == "rex" else []
+    if missing:
+        names = ", ".join(name for name, _ in missing)
+        click.secho(f"With Rex, every agent needs a `command`; missing for: {names}.", fg="yellow")
+        if click.confirm("Add them now?", default=True):
+            commands = {
+                name: click.prompt(f"Program Rex runs for agent `{name}`", default=kind or None)
+                for name, kind in missing
+            }
+            updated = cfg.add_commands(updated, commands)
+    if updated == text:
+        return
+    backup = path.with_name(f"{path.name}.bak")
+    backup.write_text(text, encoding="utf-8")
+    path.write_text(updated, encoding="utf-8")
+    click.secho(f"updated {path} (previous version saved as {backup.name})", fg="green")
+
+
 @cli.command()
 def doctor() -> None:
-    """Check that gh, git, the multiplexer, the config, and each configured agent are ready."""
+    """Check that gh, git, the multiplexer, the config, and each configured agent are ready.
+
+    When run at a terminal, it first offers to add config entries this version requires.
+    """
+    if _interactive() and cfg.CONFIG_PATH.exists():
+        _repair_config(cfg.CONFIG_PATH)
     required = []
     for tool in ("gh", "git"):
         path = shutil.which(tool)

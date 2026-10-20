@@ -47,6 +47,24 @@ uv tool install --editable .
 
 To run without installing, use `uv run reviewbot ...` from the checkout.
 
+### Upgrading to 0.2
+
+0.2 adds Rex support and makes `multiplexer` a required config setting, so a
+config written by 0.1 no longer loads until you add it. The quickest fix is to
+run `reviewbot doctor` at a terminal: it asks which multiplexer you use, adds
+the line for you, and keeps the old file as `config.toml.bak`.
+
+To make the change by hand, add one line near the top of
+`~/.config/reviewbot/config.toml`, above the first `[[agents]]`:
+
+```toml
+multiplexer = "herdr"     # keep using Herdr; nothing else changes
+```
+
+To move to Rex instead, use `multiplexer = "rex"` and give every agent a
+`command` (see [Choosing a multiplexer](#choosing-a-multiplexer)). `doctor`
+offers to add those too.
+
 ## Setup in a new environment
 
 1. **Authenticate GitHub.** ReviewBot uses whatever account `gh` is logged in as.
@@ -91,7 +109,9 @@ To run without installing, use `uv run reviewbot ...` from the checkout.
    reviewbot doctor
    ```
 
-   It checks that `gh`, `git`, and the configured multiplexer are on your
+   At a terminal, it first offers to add any setting the config is missing
+   (such as `multiplexer`). Then it checks that `gh`, `git`, and the configured
+   multiplexer are on your
    `PATH` (and, for Rex, that its server answers and a session is known), that
    `gh` is authenticated, that the config loads, that every configured agent's
    executable is on your `PATH`, and that every agent and combat prompt file
@@ -104,19 +124,68 @@ To run without installing, use `uv run reviewbot ...` from the checkout.
 ## Choosing a multiplexer
 
 `multiplexer` in `config.toml` is required and is either `"herdr"` or `"rex"`.
+It is a top-level setting, so it must come before the first `[[agents]]` (or
+any other `[...]`) line; TOML would otherwise read it as part of that table.
+
+The two differ in one way that affects your agents: Herdr starts an agent from
+its `kind`, while Rex runs the program named in `command`. Claude Code and Codex
+work with both. These are complete configs for each:
+
+```toml
+# Herdr
+watch = ["acme"]
+multiplexer = "herdr"
+prompt = "prompts/review.md"
+
+[[agents]]
+name = "claude"
+kind = "claude"
+key = "c"
+
+[[agents]]
+name = "codex"
+kind = "codex"
+key = "x"
+```
+
+```toml
+# Rex: the same, plus a command for each agent
+watch = ["acme"]
+multiplexer = "rex"
+prompt = "prompts/review.md"
+
+[[agents]]
+name = "claude"
+kind = "claude"
+command = "claude"
+key = "c"
+
+[[agents]]
+name = "codex"
+kind = "codex"
+command = "codex"
+key = "x"
+```
+
+`command` is the program to run, looked up on the `PATH` your login shell sets
+(or give a full path). `args` work the same with both: they are added after the
+program, e.g. `args = ["--model", "opus"]`. A config can carry `command` lines
+while using Herdr; Herdr ignores them, so switching back and forth is one line.
 
 ### Herdr
 
 ReviewBot opens a tab, runs `herdr agent start --kind <kind>` in it, and drives
-the agent by name with `herdr agent prompt` and `herdr agent wait`. Set
-`herdr_workspace` to send tabs to a specific workspace instead of the focused
-one.
+the agent by name with `herdr agent prompt` and `herdr agent wait`. Install the
+Herdr integration for each agent kind first (`herdr integration install
+claude`). Set `herdr_workspace` to send tabs to a specific workspace instead of
+the focused one.
 
 ### Rex
 
-ReviewBot opens a tab with `rex window new`, running the agent's `command` and
-`args` in the worktree, and drives it by its block ID. Prompts are sent as one
-bracketed paste followed by Return, so multi-line prompts arrive intact.
+ReviewBot opens a tab running the agent's `command` and `args` in the
+worktree, and drives it by its block ID. Prompts are sent as one bracketed
+paste followed by Return, so multi-line prompts arrive intact. No integration
+needs installing.
 
 Rex has no agent registry. Instead, agents report their own state with the
 OSC 7501 program status protocol, which Claude Code and Codex both do. An agent

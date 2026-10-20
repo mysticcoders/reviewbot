@@ -34,7 +34,9 @@ the config. Browsing the queues needs only `gh`.
 uv tool install git+https://github.com/mysticcoders/reviewbot
 ```
 
-Upgrade later with `uv tool upgrade reviewbot`.
+That installs the latest release from `main`. To install a specific release
+instead, add its tag, e.g. `...reviewbot@v0.2.1`. See [Upgrading](#upgrading)
+for keeping it current.
 
 To hack on it, clone the repository and install it in editable mode so local
 changes take effect without reinstalling:
@@ -46,6 +48,30 @@ uv tool install --editable .
 ```
 
 To run without installing, use `uv run reviewbot ...` from the checkout.
+
+## Upgrading
+
+How you upgrade depends on how you installed. `uv tool list` shows the
+installed version.
+
+| Installed with | Upgrade with |
+| --- | --- |
+| `uv tool install git+https://github.com/mysticcoders/reviewbot` | `uv tool upgrade reviewbot` (moves to the latest release on `main`) |
+| a release tag, `...reviewbot@v0.2.0` | `uv tool install --force git+https://github.com/mysticcoders/reviewbot@v0.2.1`, naming the new tag. `uv tool upgrade` keeps a tagged install where it is and reports "Nothing to upgrade". |
+| `uv tool install --editable .` from a clone | `git pull` in the clone. Changes apply immediately; reinstall only if dependencies changed. |
+
+Releases are tagged `vX.Y.Z` on GitHub. After any upgrade, check it and the
+config:
+
+```sh
+reviewbot --version
+reviewbot doctor
+```
+
+A release can require a new config setting. When it does, the old config
+stops loading with an error that names the missing setting, and `reviewbot
+doctor`, run at a terminal, offers to add it for you. Each such release has
+a section below.
 
 ### Upgrading to 0.2
 

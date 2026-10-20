@@ -441,7 +441,10 @@ reviewbot init --watch acme --multiplexer herdr --agent claude:c --agent codex:x
 reviewbot doctor
 
 <span class="c"># inside Herdr or Rex</span>
-reviewbot tui</code></pre>
+reviewbot tui
+
+<span class="c"># upgrade later; doctor adds any new settings</span>
+uv tool upgrade reviewbot &amp;&amp; reviewbot doctor</code></pre>
         </div>
       </div>
     </div>

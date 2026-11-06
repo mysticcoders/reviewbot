@@ -4,6 +4,9 @@
 -- Args: label, cwd, command (program and arguments), timeout (seconds).
 -- Prints "block <id>" once the tab exists. Exits 0 when the agent is ready,
 -- 3 if it exits first, and 4 if it is not ready within the timeout.
+--
+-- The tab closes when the agent exits, the Rex default for shell blocks. Rex
+-- keeps it open after a quick failure so startup errors stay readable.
 
 local args = rex.args
 local block
@@ -24,7 +27,6 @@ local window, err = rex.session.new_window{
     options = {
       command = args.command,
       cwd = args.cwd,
-      exit = { on_completion = false },
     },
   },
 }

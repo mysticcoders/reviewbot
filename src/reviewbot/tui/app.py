@@ -36,6 +36,9 @@ from ..multiplexer import active_review_keys
 from ..run import collects, launch_review
 
 
+TAB_POLL_SECONDS = 3
+
+
 def _display_status(candidate: ReviewCandidate, active: set[str]) -> str:
     return "in-progress" if candidate.key in active else candidate.status.value
 
@@ -157,6 +160,7 @@ class ReviewQueueApp(App[None]):
         self._active: set[str] = set()
         self._launching = False
         self._requesting = False
+        self._syncing = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -180,6 +184,7 @@ class ReviewQueueApp(App[None]):
         self.sub_title = self.config.scope.describe()
         await self._refresh_queue()
         self.run_worker(self._refresh_mine(quiet=True), exclusive=False)
+        self.set_interval(TAB_POLL_SECONDS, self._sync_active)
 
     @property
     def _on_mine(self) -> bool:
@@ -264,6 +269,7 @@ class ReviewQueueApp(App[None]):
         except (GhError, LaunchError, OSError) as error:
             self._status_line.update(f"[red]Refresh failed:[/red] {error}")
             return
+        selected = self._selected()
         self._candidates = candidates
         self._active = active
         self._table.clear()
@@ -277,9 +283,41 @@ class ReviewQueueApp(App[None]):
                 f"@{candidate.author}",
                 candidate.title,
             )
+        keys = [candidate.key for candidate in candidates]
+        if selected is not None and selected.key in keys:
+            self._table.move_cursor(row=keys.index(selected.key))
         if not self._on_mine:
             self._show_summary()
             self._show_selected()
+
+    async def _sync_active(self) -> None:
+        """Re-check which PRs still have an open review tab, without asking GitHub.
+
+        The Status column is redrawn only when the set of open tabs changes. When a tab
+        has closed, the agent may have posted its review, so the queue is then refetched
+        from GitHub once.
+        """
+        if self._syncing or self._launching or not self._candidates:
+            return
+        self._syncing = True
+        try:
+            candidates = self._candidates
+            try:
+                active = await asyncio.to_thread(active_review_keys, self.config, candidates)
+            except (LaunchError, OSError):
+                return
+            if candidates is not self._candidates or self._launching or active == self._active:
+                return
+            closed = bool(self._active - active)
+            self._active = active
+            for row, candidate in enumerate(candidates):
+                self._table.update_cell_at((row, 0), _display_status(candidate, active))
+            if not self._on_mine:
+                self._show_summary()
+        finally:
+            self._syncing = False
+        if closed:
+            await self._refresh_queue()
 
     async def _refresh_mine(self, *, quiet: bool = False) -> None:
         if not quiet:

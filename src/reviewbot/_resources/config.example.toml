@@ -62,6 +62,16 @@ multiplexer = "@MULTIPLEXER@"
 # [output]
 # dir = "~/reviewbot-reviews"
 
+# Optional: the dashboard and MCP endpoint (`reviewbot serve`, `reviewbot mcp`,
+# or ctrl+w in the TUI). Every request needs the token from `reviewbot token`.
+# bind is "localhost" (this machine only) or "tailnet" (this machine's
+# Tailscale address only). browser is the app that opens PRs for `open_pr`
+# (a macOS app name for `open -a`; elsewhere, a command run with the URL).
+# [serve]
+# port = 8765
+# bind = "localhost"
+# browser = "Google Chrome"
+
 # Optional: reuse existing local clones instead of cloning into work_dir.
 # ReviewBot only adds detached worktrees and fetches PR refs; it never
 # touches the clone's checked-out branch.

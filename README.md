@@ -439,6 +439,11 @@ key = "c"
 [output]                            # optional; see "Saving reviews"
 dir = "~/reviewbot-reviews"
 
+[serve]                             # optional; see "Dashboard and MCP"
+port = 8765
+bind = "localhost"                  # "localhost" or "tailnet"
+browser = "Google Chrome"           # opens PRs for the MCP open_pr tool
+
 # Reuse existing local clones instead of cloning into work_dir.
 [[checkouts]]
 repo = "acme/api"
@@ -466,6 +471,7 @@ reviewbot tui
 | your agent keys | launch that agent, group, or combat on the selected review request (shown in the footer) |
 | `a` | (My PRs) pick reviewers: previous reviewers, GitHub's suggestions, or typed `login` / `org/team`; `ctrl+s` requests, `escape` cancels |
 | `e` | (My PRs) re-request review from everyone whose review is stale or requested changes |
+| `ctrl+w` | start the dashboard and HTTP MCP endpoint and open the dashboard in `[serve]` `browser`; press again to stop (`reviewbot tui --serve` starts it without opening the browser) |
 
 The TUI is deliberately a queue picker rather than an agent interface; active
 work happens in multiplexer tabs, which the queue marks as `in-progress`.
@@ -501,11 +507,64 @@ reviewbot next --agent claude             # ...and offer to launch it
 reviewbot next --agent pair --yes         # launch a group without asking
 reviewbot launch acme/api#422 --agent claude
 reviewbot launch https://github.com/acme/api/pull/422 --agent duel
+reviewbot serve                           # PR dashboard and MCP; see "Dashboard and MCP"
 ```
 
 `--agent` takes any agent, group, or combat name from the config. `launch`
 looks the PR up in that repository's review requests, so it works regardless of
 the configured `watch` list.
+
+## Dashboard and MCP
+
+ReviewBot can serve the same two lists as a web page, so every PR is a link
+that opens in a browser already signed in to GitHub, and as an MCP server, so
+an agent can list your queue and open a PR in that browser for you. Add a
+`[serve]` table; every field is required:
+
+```toml
+[serve]
+port = 8765
+bind = "localhost"        # or "tailnet"
+browser = "Google Chrome" # a macOS app for `open -a`; elsewhere, a command run with the URL
+```
+
+```sh
+reviewbot serve           # dashboard at /, JSON at /api/prs, MCP at /mcp; ctrl+c stops
+reviewbot tui --serve     # the same, hosted by the TUI (or press ctrl+w in it)
+reviewbot token           # print the token, the dashboard login URL, and MCP setup
+reviewbot token --rotate  # replace the token; clients must update
+reviewbot mcp             # MCP over stdio, for a client on this machine to launch
+```
+
+The MCP tools are `list_review_queue` (with `actionable_only`),
+`list_my_prs`, and `open_pr`. `open_pr` accepts `owner/repo#number` or the PR
+URL and opens only PRs on one of the two lists, never an arbitrary address.
+
+To add it to Claude Code:
+
+```sh
+claude mcp add reviewbot -- reviewbot mcp     # local, over stdio: no token needed
+claude mcp add --transport http reviewbot http://<host>:8765/mcp \
+  --header "Authorization: Bearer <token>"    # over HTTP, from `reviewbot token`
+```
+
+Access is limited in layers:
+
+- **Binding.** `localhost` listens on `127.0.0.1` only. `tailnet` listens only
+  on this machine's Tailscale address, never on every interface, so the page is
+  reachable from your other tailnet devices but not your local network.
+- **Token.** Every HTTP request needs the token in
+  `~/.config/reviewbot/serve-token` (created on first use, owner-only). MCP
+  clients send `Authorization: Bearer <token>`. The browser opens the login
+  URL from `reviewbot token` once; the server exchanges the token for an
+  `HttpOnly`, `SameSite=Strict` cookie and redirects to a clean URL.
+- **Host and Origin checks.** Requests must name one of the server's own host
+  names, and any `Origin` header must match them. That blocks DNS rebinding
+  and other websites in your browser from reaching the server.
+
+Stdio MCP needs no token: the client starts `reviewbot mcp` as your own
+process. GitHub data is fetched on demand and cached for two minutes. When the
+TUI is serving, it shares its own fetches with the page.
 
 ## What a launch does
 

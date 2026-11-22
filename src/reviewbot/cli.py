@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from dataclasses import replace
 from importlib import resources
 from pathlib import Path
 
@@ -498,11 +499,92 @@ def launch_command(target: str, agent: str) -> None:
 
 @cli.command("tui")
 @scope_options
-def tui_command(watch: tuple[str, ...], watch_all: bool) -> None:
+@click.option("--serve", "serve", is_flag=True,
+              help="Start the dashboard and HTTP MCP endpoint with the TUI (toggle with ctrl+w).")
+def tui_command(watch: tuple[str, ...], watch_all: bool, serve: bool) -> None:
     """Open an interactive picker for the current review-request queue."""
     from .tui.app import run_tui
 
-    run_tui(_load(watch, watch_all))
+    config = _load(watch, watch_all)
+    if serve and config.serve is None:
+        raise click.ClickException(f"add a `[serve]` table (port, bind, browser) to {config.path}")
+    run_tui(config, serve=serve)
+
+
+def _serve_settings(config: cfg.Config, port: int | None, bind: str | None) -> cfg.Serve:
+    """The configured `[serve]` table with any command-line overrides applied."""
+    if config.serve is None:
+        raise click.ClickException(
+            f"add a `[serve]` table (port, bind, browser) to {config.path}; see 'Dashboard and MCP' in the README"
+        )
+    return replace(
+        config.serve,
+        port=config.serve.port if port is None else port,
+        bind=bind or config.serve.bind,
+    )
+
+
+@cli.command("serve")
+@scope_options
+@click.option("--port", type=click.IntRange(0, 65535), default=None, help="Override `[serve]` port.")
+@click.option("--bind", type=click.Choice(cfg.BINDS), default=None, help="Override `[serve]` bind.")
+def serve_command(
+    watch: tuple[str, ...], watch_all: bool, port: int | None, bind: str | None
+) -> None:
+    """Serve the PR dashboard and an HTTP MCP endpoint, both protected by a token."""
+    from .board import Board
+    from .server import Dashboard, ServeError
+
+    config = _load(watch, watch_all)
+    board = Board(config)
+    try:
+        dashboard = Dashboard(config, board, serve=_serve_settings(config, port, bind))
+    except ServeError as error:
+        raise click.ClickException(str(error)) from None
+    click.echo(f"Dashboard: {dashboard.url}")
+    click.echo(f"MCP:       {dashboard.mcp_url} (Authorization: Bearer <token>)")
+    click.echo("Open the dashboard once with the URL from `reviewbot token`. Ctrl+C stops.")
+    try:
+        dashboard.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        dashboard.http.server_close()
+
+
+@cli.command("mcp")
+@scope_options
+def mcp_command(watch: tuple[str, ...], watch_all: bool) -> None:
+    """Run the MCP server over stdio, for an MCP client to launch."""
+    from .board import Board
+    from .mcp import McpServer, serve_stdio
+
+    serve_stdio(McpServer(Board(_load(watch, watch_all))))
+
+
+@cli.command("token")
+@click.option("--rotate", is_flag=True, help="Replace the token; existing clients must update.")
+def token_command(rotate: bool) -> None:
+    """Print the serve token with the dashboard login URL and MCP client setup."""
+    from .server import ServeError, load_token, resolve_listen, token_path
+
+    config = _load()
+    token = load_token(config, rotate=rotate)
+    click.echo(f"Token ({token_path(config)}): {token}")
+    if config.serve is None:
+        click.echo(f"Add a `[serve]` table to {config.path} to serve the dashboard.")
+        return
+    try:
+        listen = resolve_listen(config.serve.bind)
+    except ServeError as error:
+        raise click.ClickException(str(error)) from None
+    url = f"http://{listen.display}:{config.serve.port}/"
+    click.echo(f"Dashboard login: {url}?token={token}")
+    click.echo(
+        f"Claude Code:     claude mcp add --transport http reviewbot {url}mcp "
+        f'--header "Authorization: Bearer {token}"'
+    )
+    click.echo("Local stdio:     claude mcp add reviewbot -- reviewbot mcp")
 
 
 if __name__ == "__main__":

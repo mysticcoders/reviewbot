@@ -1,0 +1,313 @@
+"""The token-protected dashboard and HTTP MCP endpoint behind `reviewbot serve` and the TUI."""
+
+from __future__ import annotations
+
+import hmac
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import threading
+from dataclasses import dataclass
+from http import HTTPStatus
+from http.cookies import SimpleCookie
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlsplit
+
+from .board import Board
+from .config import Config, Serve
+from .mcp import McpServer, handle_payload
+
+COOKIE = "reviewbot_token"
+TAILSCALE_APP = Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+MAX_BODY = 1 << 20
+
+
+class ServeError(Exception):
+    pass
+
+
+def token_path(config: Config) -> Path:
+    return config.path.parent / "serve-token"
+
+
+def load_token(config: Config, *, rotate: bool = False) -> str:
+    """Read the serve token, creating (or replacing) it as an owner-only file when needed."""
+    path = token_path(config)
+    if not rotate and path.exists():
+        token = path.read_text(encoding="utf-8").strip()
+        if token:
+            return token
+    token = secrets.token_urlsafe(32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(token + "\n")
+    path.chmod(0o600)
+    return token
+
+
+def _tailscale() -> str:
+    found = shutil.which("tailscale")
+    if found:
+        return found
+    if TAILSCALE_APP.exists():
+        return str(TAILSCALE_APP)
+    raise ServeError("bind = \"tailnet\" needs the Tailscale CLI, which was not found")
+
+
+@dataclass(frozen=True)
+class Listen:
+    """The address to bind, the hostnames clients may use for it, and the URL to show."""
+
+    address: str
+    hosts: tuple[str, ...]
+    display: str
+
+
+def resolve_listen(bind: str) -> Listen:
+    """Turn `localhost` or `tailnet` into a concrete address; never a wildcard."""
+    if bind == "localhost":
+        return Listen("127.0.0.1", ("127.0.0.1", "localhost"), "127.0.0.1")
+    if bind != "tailnet":
+        raise ServeError(f"unknown bind `{bind}`")
+    cli = _tailscale()
+    try:
+        address = subprocess.run(
+            [cli, "ip", "-4"], check=True, capture_output=True, text=True, timeout=10,
+        ).stdout.split()[0]
+        status = json.loads(subprocess.run(
+            [cli, "status", "--json"], check=True, capture_output=True, text=True, timeout=10,
+        ).stdout)
+    except (OSError, subprocess.SubprocessError, IndexError, json.JSONDecodeError) as error:
+        raise ServeError(f"could not read this machine's Tailscale address: {error}") from None
+    dns = str((status.get("Self") or {}).get("DNSName") or "").rstrip(".")
+    hosts = [address]
+    if dns:
+        hosts += [dns, dns.split(".", 1)[0]]
+    return Listen(address, tuple(hosts), dns or address)
+
+
+class _Handler(BaseHTTPRequestHandler):
+    server: "_HttpServer"
+    protocol_version = "HTTP/1.1"
+    server_version = "ReviewBot"
+
+    def log_message(self, format: str, *args: Any) -> None:
+        return
+
+    def _host_ok(self) -> bool:
+        host = (self.headers.get("Host") or "").strip().lower()
+        return host in self.server.allowed_hosts
+
+    def _origin_ok(self) -> bool:
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True
+        parts = urlsplit(origin)
+        return parts.scheme in ("http", "https") and parts.netloc.lower() in self.server.allowed_hosts
+
+    def _token_ok(self, token: str | None) -> bool:
+        return bool(token) and hmac.compare_digest(token.encode(), self.server.token.encode())
+
+    def _bearer(self) -> str | None:
+        header = self.headers.get("Authorization") or ""
+        scheme, _, value = header.partition(" ")
+        return value.strip() if scheme.lower() == "bearer" else None
+
+    def _cookie(self) -> str | None:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie") or "")
+        except Exception:
+            return None
+        morsel = cookie.get(COOKIE)
+        return morsel.value if morsel else None
+
+    def _send(
+        self, status: HTTPStatus, body: bytes = b"", content_type: str = "text/plain; charset=utf-8",
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _json(self, status: HTTPStatus, data: Any) -> None:
+        self._send(status, json.dumps(data).encode(), "application/json")
+
+    def _guard(self) -> bool:
+        """Reject requests addressed to an unexpected host or sent from a foreign origin."""
+        if not self._host_ok():
+            self._send(HTTPStatus.MISDIRECTED_REQUEST, b"unexpected Host\n")
+            return False
+        if not self._origin_ok():
+            self._send(HTTPStatus.FORBIDDEN, b"foreign Origin\n")
+            return False
+        return True
+
+    def do_GET(self) -> None:
+        if not self._guard():
+            return
+        parts = urlsplit(self.path)
+        if parts.path == "/":
+            self._page(parts.query)
+        elif parts.path == "/api/prs":
+            if not (self._token_ok(self._bearer()) or self._token_ok(self._cookie())):
+                self._json(HTTPStatus.UNAUTHORIZED, {"error": "token required"})
+                return
+            refresh = parse_qs(parts.query).get("refresh") == ["1"]
+            self.server.board.refresh(force=refresh)
+            self._json(HTTPStatus.OK, self.server.board.snapshot())
+        elif parts.path == "/mcp":
+            self._send(HTTPStatus.METHOD_NOT_ALLOWED, b"POST only\n", headers={"Allow": "POST"})
+        else:
+            self._send(HTTPStatus.NOT_FOUND, b"not found\n")
+
+    do_HEAD = do_GET
+
+    def _page(self, query: str) -> None:
+        """Serve the dashboard, trading a one-time `?token=` for a strict HttpOnly cookie."""
+        offered = parse_qs(query).get("token", [None])[0]
+        if offered is not None:
+            if not self._token_ok(offered):
+                self._send(HTTPStatus.UNAUTHORIZED, _DENIED, "text/html; charset=utf-8")
+                return
+            self._send(HTTPStatus.SEE_OTHER, headers={
+                "Location": "/",
+                "Set-Cookie": f"{COOKIE}={offered}; HttpOnly; SameSite=Strict; Path=/",
+            })
+            return
+        if not self._token_ok(self._cookie()):
+            self._send(HTTPStatus.UNAUTHORIZED, _DENIED, "text/html; charset=utf-8")
+            return
+        self._send(HTTPStatus.OK, _page_html(), "text/html; charset=utf-8", headers={
+            "Content-Security-Policy": (
+                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+            ),
+        })
+
+    def do_POST(self) -> None:
+        if not self._guard():
+            return
+        if urlsplit(self.path).path != "/mcp":
+            self._send(HTTPStatus.NOT_FOUND, b"not found\n")
+            return
+        if not self._token_ok(self._bearer()):
+            self._json(HTTPStatus.UNAUTHORIZED, {"error": "bearer token required"})
+            return
+        if "application/json" not in (self.headers.get("Content-Type") or ""):
+            self._send(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, b"application/json required\n")
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if not 0 < length <= MAX_BODY:
+            self._send(HTTPStatus.BAD_REQUEST, b"bad Content-Length\n")
+            return
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json(HTTPStatus.BAD_REQUEST, {
+                "jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"},
+            })
+            return
+        reply = handle_payload(self.server.mcp, payload)
+        if reply is None:
+            self._send(HTTPStatus.ACCEPTED)
+        else:
+            self._json(HTTPStatus.OK, reply)
+
+
+class _HttpServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address: tuple[str, int], board: Board, token: str, hosts: tuple[str, ...]):
+        super().__init__(address, _Handler)
+        self.board = board
+        self.token = token
+        self.mcp = McpServer(board)
+        port = self.server_address[1]
+        self.allowed_hosts = frozenset(
+            f"{host.lower()}:{port}" for host in hosts
+        ) | ({host.lower() for host in hosts} if port == 80 else frozenset())
+
+
+class Dashboard:
+    """Run the dashboard and HTTP MCP endpoint for one config, in the foreground or a thread."""
+
+    def __init__(
+        self, config: Config, board: Board, *, serve: Serve | None = None,
+        listen: Listen | None = None,
+    ) -> None:
+        serve = serve or config.serve
+        if serve is None:
+            raise ServeError(
+                f"add a `[serve]` table (port, bind, browser) to {config.path} to serve"
+            )
+        self.serve = serve
+        self.listen = listen or resolve_listen(serve.bind)
+        self.token = load_token(config)
+        try:
+            self.http = _HttpServer(
+                (self.listen.address, serve.port), board, self.token, self.listen.hosts,
+            )
+        except OSError as error:
+            raise ServeError(
+                f"could not listen on {self.listen.address}:{serve.port}: {error}"
+            ) from None
+        self._thread: threading.Thread | None = None
+
+    @property
+    def port(self) -> int:
+        return self.http.server_address[1]
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.listen.display}:{self.port}/"
+
+    @property
+    def mcp_url(self) -> str:
+        return f"{self.url}mcp"
+
+    @property
+    def login_url(self) -> str:
+        """The dashboard URL carrying the token once, to set the browser's cookie."""
+        return f"{self.url}?token={self.token}"
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self.http.serve_forever, daemon=True)
+        self._thread.start()
+
+    def serve_forever(self) -> None:
+        self.http.serve_forever()
+
+    def stop(self) -> None:
+        self.http.shutdown()
+        self.http.server_close()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+
+_DENIED = (
+    b"<!doctype html><meta charset=utf-8><title>ReviewBot</title>"
+    b"<p>This dashboard needs its token. Open the URL printed by <code>reviewbot token</code>.</p>"
+)
+
+
+def _page_html() -> bytes:
+    return files("reviewbot").joinpath("_resources/dashboard.html").read_bytes()

@@ -22,6 +22,7 @@ from textual.widgets import (
     TabPane,
 )
 
+from ..board import Board, OpenError, open_in_browser
 from ..config import Config
 from ..github import (
     AuthoredPR,
@@ -34,6 +35,7 @@ from ..github import (
 from ..launch import LaunchError
 from ..multiplexer import active_review_keys
 from ..run import collects, launch_review
+from ..server import Dashboard, ServeError
 
 
 TAB_POLL_SECONDS = 3
@@ -143,11 +145,15 @@ class ReviewQueueApp(App[None]):
         Binding("2", "show_tab('mine-tab')", "My PRs", show=False),
         Binding("a", "request_review", "Request review"),
         Binding("e", "rerequest_stale", "Re-request stale"),
+        Binding("ctrl+w", "toggle_serve", "Serve"),
     ]
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, *, serve: bool = False) -> None:
         super().__init__()
         self.config = config
+        self.board = Board(config)
+        self._dashboard: Dashboard | None = None
+        self._serve_on_mount = serve
         for launcher in config.launchers:
             if launcher.key:
                 self.bind(launcher.key, f"launch({launcher.name!r})", description=launcher.name)
@@ -185,6 +191,45 @@ class ReviewQueueApp(App[None]):
         await self._refresh_queue()
         self.run_worker(self._refresh_mine(quiet=True), exclusive=False)
         self.set_interval(TAB_POLL_SECONDS, self._sync_active)
+        if self._serve_on_mount:
+            self._start_serve(open_browser=False)
+
+    def on_unmount(self) -> None:
+        if self._dashboard is not None:
+            self._dashboard.stop()
+            self._dashboard = None
+
+    def _start_serve(self, *, open_browser: bool) -> None:
+        """Start the dashboard and HTTP MCP endpoint on a background thread."""
+        if self.config.serve is None:
+            self._status_line.update(
+                f"[red]Serve:[/red] add a `[serve]` table (port, bind, browser) to {self.config.path}"
+            )
+            return
+        try:
+            self._dashboard = Dashboard(self.config, self.board)
+        except ServeError as error:
+            self._status_line.update(f"[red]Serve failed:[/red] {error}")
+            return
+        self._dashboard.start()
+        self.sub_title = f"{self.config.scope.describe()} · serving {self._dashboard.url}"
+        self._status_line.update(
+            f"Serving {self._dashboard.url} and MCP at {self._dashboard.mcp_url} · ctrl+w stops"
+        )
+        if open_browser:
+            try:
+                open_in_browser(self.config.serve, self._dashboard.login_url)
+            except OpenError as error:
+                self._status_line.update(f"[red]Could not open the dashboard:[/red] {error}")
+
+    def action_toggle_serve(self) -> None:
+        if self._dashboard is None:
+            self._start_serve(open_browser=True)
+            return
+        dashboard, self._dashboard = self._dashboard, None
+        self.sub_title = self.config.scope.describe()
+        self.run_worker(asyncio.to_thread(dashboard.stop))
+        self._status_line.update(f"Stopped serving {dashboard.url}")
 
     @property
     def _on_mine(self) -> bool:
@@ -272,6 +317,7 @@ class ReviewQueueApp(App[None]):
         selected = self._selected()
         self._candidates = candidates
         self._active = active
+        self.board.update_queue(candidates, active)
         self._table.clear()
         for candidate in candidates:
             self._table.add_row(
@@ -310,6 +356,7 @@ class ReviewQueueApp(App[None]):
                 return
             closed = bool(self._active - active)
             self._active = active
+            self.board.update_active(active)
             for row, candidate in enumerate(candidates):
                 self._table.update_cell_at((row, 0), _display_status(candidate, active))
             if not self._on_mine:
@@ -329,6 +376,7 @@ class ReviewQueueApp(App[None]):
             return
         row = self._mine_table.cursor_row
         self._authored = authored
+        self.board.update_mine(authored)
         self._mine_table.clear()
         for pr in authored:
             self._mine_table.add_row(
@@ -436,6 +484,7 @@ class ReviewQueueApp(App[None]):
             self._status_line.update(f"[red]Launch failed:[/red] {error}")
         else:
             self._active.add(candidate.key)
+            self.board.update_active(self._active)
             self._table.update_cell_at(
                 (self._table.cursor_row, 0), "in-progress"
             )
@@ -449,5 +498,5 @@ class ReviewQueueApp(App[None]):
         await self._launch(agent)
 
 
-def run_tui(config: Config) -> None:
-    ReviewQueueApp(config).run()
+def run_tui(config: Config, *, serve: bool = False) -> None:
+    ReviewQueueApp(config, serve=serve).run()

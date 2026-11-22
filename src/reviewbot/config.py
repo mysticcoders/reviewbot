@@ -14,6 +14,7 @@ RESERVED_KEYS = frozenset("qro12ae")
 NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,15}")
 KEY_PATTERN = re.compile(r"[A-Za-z0-9]")
 MULTIPLEXERS = {"herdr": "Herdr", "rex": "Rex"}
+BINDS = ("localhost", "tailnet")
 
 
 class ConfigError(Exception):
@@ -144,6 +145,20 @@ class Output:
 
 
 @dataclass(frozen=True)
+class Serve:
+    """The local dashboard and MCP endpoint: where it listens and which browser opens PRs.
+
+    `bind` is "localhost" (this machine only) or "tailnet" (this machine's Tailscale
+    address only). `browser` is a macOS application name for `open -a`, or on other
+    platforms a command that is run with the URL as its argument.
+    """
+
+    port: int
+    bind: str
+    browser: str
+
+
+@dataclass(frozen=True)
 class Config:
     scope: Scope
     work_dir: Path
@@ -155,6 +170,7 @@ class Config:
     combats: tuple[Combat, ...] = ()
     checkouts: tuple[Checkout, ...] = ()
     output: Output | None = None
+    serve: Serve | None = None
     path: Path = field(default=CONFIG_PATH)
 
     @property
@@ -368,6 +384,28 @@ def _output(raw: dict, base: Path) -> Output | None:
     return Output(dir=_expand(str(table["dir"]), base))
 
 
+def _serve(raw: dict) -> Serve | None:
+    """Parse `[serve]`, requiring every field so nothing about exposure is assumed."""
+    table = raw.get("serve")
+    if table is None:
+        return None
+    if not isinstance(table, dict):
+        raise ConfigError("`[serve]` must be a table with `port`, `bind`, and `browser`.")
+    missing = [name for name in ("port", "bind", "browser") if name not in table]
+    if missing:
+        raise ConfigError(f"`[serve]` is missing {', '.join(f'`{m}`' for m in missing)}.")
+    port = table["port"]
+    if not isinstance(port, int) or isinstance(port, bool) or not 0 <= port <= 65535:
+        raise ConfigError("`[serve]` `port` must be an integer from 0 to 65535.")
+    bind = table["bind"]
+    if bind not in BINDS:
+        raise ConfigError(f"`[serve]` `bind` must be one of {', '.join(BINDS)}, not `{bind}`.")
+    browser = table["browser"]
+    if not isinstance(browser, str) or not browser.strip():
+        raise ConfigError("`[serve]` `browser` must name the browser that opens PRs.")
+    return Serve(port=port, bind=bind, browser=browser.strip())
+
+
 def load(path: Path | None = None) -> Config:
     path = path or CONFIG_PATH
     if not path.exists():
@@ -392,6 +430,7 @@ def load(path: Path | None = None) -> Config:
         combats=combats,
         checkouts=_checkouts(raw, base),
         output=_output(raw, base),
+        serve=_serve(raw),
         path=path,
     )
 

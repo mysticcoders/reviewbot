@@ -524,10 +524,19 @@ def _serve_settings(config: cfg.Config, port: int | None, bind: str | None) -> c
     )
 
 
+def serve_options(command):
+    """Add `--port` and `--bind` overrides of the `[serve]` table to a command."""
+    command = click.option(
+        "--bind", type=click.Choice(cfg.BINDS), default=None, help="Override `[serve]` bind.",
+    )(command)
+    return click.option(
+        "--port", type=click.IntRange(0, 65535), default=None, help="Override `[serve]` port.",
+    )(command)
+
+
 @cli.command("serve")
 @scope_options
-@click.option("--port", type=click.IntRange(0, 65535), default=None, help="Override `[serve]` port.")
-@click.option("--bind", type=click.Choice(cfg.BINDS), default=None, help="Override `[serve]` bind.")
+@serve_options
 def serve_command(
     watch: tuple[str, ...], watch_all: bool, port: int | None, bind: str | None
 ) -> None:
@@ -563,9 +572,13 @@ def mcp_command(watch: tuple[str, ...], watch_all: bool) -> None:
 
 
 @cli.command("token")
+@serve_options
 @click.option("--rotate", is_flag=True, help="Replace the token; existing clients must update.")
-def token_command(rotate: bool) -> None:
-    """Print the serve token with the dashboard login URL and MCP client setup."""
+def token_command(port: int | None, bind: str | None, rotate: bool) -> None:
+    """Print the serve token with the dashboard login URL and MCP client setup.
+
+    Pass the same `--port`/`--bind` given to `reviewbot serve` so the URLs match it.
+    """
     from .server import ServeError, load_token, resolve_listen, token_path
 
     config = _load()
@@ -574,11 +587,12 @@ def token_command(rotate: bool) -> None:
     if config.serve is None:
         click.echo(f"Add a `[serve]` table to {config.path} to serve the dashboard.")
         return
+    serve = _serve_settings(config, port, bind)
     try:
-        listen = resolve_listen(config.serve.bind)
+        listen = resolve_listen(serve.bind)
     except ServeError as error:
         raise click.ClickException(str(error)) from None
-    url = f"http://{listen.display}:{config.serve.port}/"
+    url = f"http://{listen.display}:{serve.port}/"
     click.echo(f"Dashboard login: {url}?token={token}")
     click.echo(
         f"Claude Code:     claude mcp add --transport http reviewbot {url}mcp "

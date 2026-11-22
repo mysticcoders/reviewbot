@@ -141,3 +141,30 @@ def test_doctor_changes_nothing_when_declined_or_not_at_a_terminal(tmp_path, mon
     assert "`multiplexer` is missing" in result.output
     assert "run `reviewbot doctor` to add it" in result.output
     assert not (tmp_path / "config.toml.bak").exists()
+
+
+def test_token_urls_follow_the_bind_and_port_overrides(tmp_path, monkeypatch):
+    from reviewbot import server
+    from reviewbot.server import Listen
+
+    (tmp_path / "config.toml").write_text(
+        'watch = ["acme"]\nmultiplexer = "rex"\n'
+        '[serve]\nport = 8765\nbind = "localhost"\nbrowser = "Google Chrome"\n',
+        encoding="utf-8",
+    )
+    binds = []
+
+    def resolve(bind):
+        binds.append(bind)
+        if bind == "tailnet":
+            return Listen("100.1.2.3", ("100.1.2.3", "mac.tail.ts.net"), "mac.tail.ts.net")
+        return Listen("127.0.0.1", ("127.0.0.1", "localhost"), "127.0.0.1")
+
+    monkeypatch.setattr(server, "resolve_listen", resolve)
+    result = run(tmp_path, monkeypatch, "token")
+    assert "http://127.0.0.1:8765/?token=" in result.output
+    result = run(tmp_path, monkeypatch, "token", "--bind", "tailnet", "--port", "9000")
+    assert result.exit_code == 0, result.output
+    assert "http://mac.tail.ts.net:9000/?token=" in result.output
+    assert "http://mac.tail.ts.net:9000/mcp" in result.output
+    assert binds == ["localhost", "tailnet"]

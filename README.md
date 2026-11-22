@@ -532,6 +532,8 @@ browser = "Google Chrome" # a macOS app for `open -a`; elsewhere, a command run 
 reviewbot serve           # dashboard at /, JSON at /api/prs, MCP at /mcp; ctrl+c stops
 reviewbot tui --serve     # the same, hosted by the TUI (or press ctrl+w in it)
 reviewbot token           # print the token, the dashboard login URL, and MCP setup
+reviewbot serve --bind tailnet --port 9000   # override [serve] for one run...
+reviewbot token --bind tailnet --port 9000   # ...and print URLs that match it
 reviewbot token --rotate  # replace the token; clients must update
 reviewbot mcp             # MCP over stdio, for a client on this machine to launch
 ```

@@ -3,6 +3,13 @@ Review GitHub pull request {key}: {title} (by @{author}), focusing only on tests
 You are in a detached worktree at the exact PR head {head_sha}; the base branch is
 {base_branch}. Checks at launch: {checks}.
 
+Before reviewing, verify HEAD is {head_sha}. Use the refreshed remote-tracking base
+origin/{base_branch}, never the potentially stale local {base_branch}. Resolve and record
+its SHA, the merge base with HEAD, and the changed-file list using the three-dot diff.
+If the base cannot be verified, state that limitation instead of assuming the scope.
+Keep pre-existing repository issues separate from PR findings unless this PR newly exposes
+the behavior. Include the reviewed head/base SHAs in the result.
+
 Identify the behavior this PR adds or changes and its realistic failure modes. For each,
 find the test that would catch a regression, or establish that none exists. Run the
 relevant tests when you can and report exactly what ran and the results.

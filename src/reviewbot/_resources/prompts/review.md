@@ -4,6 +4,13 @@ You are in a detached worktree at the exact PR head {head_sha}. The base branch 
 {base_branch}. Inspect the PR diff and relevant repository code and tests. Focus
 the review on whether meaningful tests protect the behavior this PR adds or changes.
 
+Before reviewing, verify HEAD is {head_sha}. Use the refreshed remote-tracking base
+origin/{base_branch}, never the potentially stale local {base_branch}. Resolve and record
+its SHA, the merge base with HEAD, and the changed-file list using the three-dot diff.
+If the base cannot be verified, state that limitation instead of assuming the scope.
+Keep pre-existing repository issues separate from PR findings unless this PR newly exposes
+the behavior. Include the reviewed head/base SHAs in the result.
+
 Identify the intended behavior and realistic failure modes, then check existing tests
 for coverage of the important success paths, edge cases, error handling, and regressions.
 Evaluate whether assertions would catch incorrect behavior, rather than merely execute

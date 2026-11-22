@@ -515,9 +515,13 @@ the configured `watch` list.
    detached worktree at that exact SHA under
    `<work_dir>/worktrees/<owner>-<repo>/pr-<n>-<sha>`.
 3. For each agent in the first phase (one agent, every member of a group, or
-   a combat's first speakers), opens a tab named `<repo> #<n> <agent> review`
-   and starts the agent there: `herdr agent start --kind <kind> -- <args>`
-   with Herdr, or `<command> <args>` with Rex, waiting until it reports ready.
+   a combat's first speakers), opens a tab named
+   `<owner>/<repo> #<n> <sha> <agent> review` and starts the agent there:
+   `herdr agent start --kind <kind> -- <args>` with Herdr, or
+   `<command> <args>` with Rex, waiting until it reports ready. Because the
+   name carries the head commit, a tab left by an interrupted launch is reused
+   only for the same commit, and only if its shell is still in that checkout;
+   after the PR moves, a new tab opens for the new commit.
 4. Without combats or `[output]`, sends each agent its rendered prompt and is
    done. Otherwise, starts the background runner described under "Combat
    review", which opens later agents' tabs as their turns come up.

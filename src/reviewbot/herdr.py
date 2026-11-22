@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -41,18 +42,20 @@ def _snapshot_panes() -> set[str]:
     return _pane_ids(_snapshot())
 
 
-def _existing_tab_pane(label: str) -> str | None:
-    """Return the shell pane from an earlier interrupted launch, if present."""
+def _tabs() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     snapshot = _snapshot().get("result", {}).get("snapshot", {})
-    tab_ids = {
-        tab.get("tab_id")
-        for tab in snapshot.get("tabs", [])
-        if tab.get("label") == label
-    }
-    matching = [
-        pane for pane in snapshot.get("panes", [])
-        if pane.get("tab_id") in tab_ids
-    ]
+    return snapshot.get("tabs", []), snapshot.get("panes", [])
+
+
+def _existing_tab_pane(label: str, checkout: Path) -> str | None:
+    """Return the shell pane from an earlier interrupted launch, if present.
+
+    The label names the head commit, so a matching tab was opened for this checkout; the
+    pane's directory is still checked, since its shell may have moved elsewhere.
+    """
+    tabs, panes = _tabs()
+    tab_ids = {tab.get("tab_id") for tab in tabs if tab.get("label") == label}
+    matching = [pane for pane in panes if pane.get("tab_id") in tab_ids]
     if not matching:
         return None
     if len(matching) != 1:
@@ -60,20 +63,30 @@ def _existing_tab_pane(label: str) -> str | None:
     pane = matching[0]
     if pane.get("agent"):
         raise LaunchError(f"Herdr tab `{label}` already has an agent running")
+    cwd = pane.get("cwd")
+    if cwd and Path(cwd).resolve() != checkout.resolve():
+        raise LaunchError(
+            f"Herdr tab `{label}` is in {cwd}, not the PR checkout {checkout}; close it and retry"
+        )
     return pane.get("pane_id")
 
 
 AGENT_NAME_MAX = 32
 
 
-def _agent_name(repo: str, number: int, agent: str) -> str:
-    """Build a Herdr agent name: lowercase letters, digits, '-' or '_', 32 characters max."""
-    suffix = f"-{number}-{agent}"
-    slug = re.sub(r"[^a-z0-9_-]+", "-", repo.rsplit("/", 1)[-1].lower())
-    slug = re.sub(r"-{2,}", "-", slug).strip("-_")
-    room = AGENT_NAME_MAX - len("review-") - len(suffix)
-    slug = slug[:max(room, 0)].rstrip("-_")
-    return f"review-{slug}{suffix}" if slug else f"review{suffix}"
+def _agent_name(candidate: ReviewCandidate, agent: str) -> str:
+    """Build a Herdr agent name unique to the repository, PR, head commit, and agent.
+
+    Herdr allows lowercase letters, digits, '-' or '_', 32 characters max, so the readable
+    part is trimmed to fit and a short hash of the full identity keeps names distinct
+    across owners and commits.
+    """
+    identity = f"{candidate.repo}#{candidate.number}@{candidate.head_sha}/{agent}"
+    digest = hashlib.sha1(identity.encode()).hexdigest()[:6]
+    slug = re.sub(r"[^a-z0-9_-]+", "-", candidate.repo.rsplit("/", 1)[-1].lower())
+    readable = re.sub(r"-{2,}", "-", f"review-{slug}-{candidate.number}-{agent}")
+    readable = readable[:AGENT_NAME_MAX - len(digest) - 1].rstrip("-_")
+    return f"{readable}-{digest}"
 
 
 def _start_agent_with_retry(agent_name: str, agent: Agent, pane_id: str) -> None:
@@ -98,10 +111,14 @@ def _start_agent_with_retry(agent_name: str, agent: Agent, pane_id: str) -> None
 def active_review_keys(config: Config, candidates: list[ReviewCandidate]) -> set[str]:
     """Best-effort mapping of live Herdr review tabs back to queue entries."""
     try:
-        raw = _run("herdr", "api", "snapshot")
+        tabs, _ = _tabs()
     except LaunchError:
         return set()
-    return {candidate.key for candidate in candidates if review_marker(candidate) in raw}
+    labels = [tab.get("label") or "" for tab in tabs]
+    return {
+        candidate.key for candidate in candidates
+        if any(label.startswith(review_marker(candidate)) for label in labels)
+    }
 
 
 def open_session(
@@ -109,7 +126,7 @@ def open_session(
 ) -> LaunchResult:
     """Open (or reuse) the PR's Herdr tab for this agent and start the agent in it."""
     label = tab_label(candidate, agent.name)
-    pane_id = _existing_tab_pane(label)
+    pane_id = _existing_tab_pane(label, checkout)
     if pane_id is None:
         before = _snapshot_panes()
         command = ["herdr", "tab", "create"]
@@ -124,7 +141,7 @@ def open_session(
                 f"tab `{label}` was created"
             )
         pane_id = created.pop()
-    agent_name = _agent_name(candidate.repo, candidate.number, agent.name)
+    agent_name = _agent_name(candidate, agent.name)
     _start_agent_with_retry(agent_name, agent, pane_id)
     return LaunchResult(agent=agent.name, tab_label=label, checkout=checkout, handle=agent_name)
 

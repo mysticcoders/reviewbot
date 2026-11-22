@@ -54,6 +54,14 @@ def prepare_checkout(config: Config, candidate: ReviewCandidate) -> Path:
     if not (repo_dir / ".git").exists():
         raise LaunchError(f"repository cache is not a Git checkout: {repo_dir}")
 
+    # A cached clone's local base branch may be stale. Refresh the remote-tracking
+    # ref on every launch, including when reusing an existing PR worktree.
+    run_command(
+        "git", "-C", str(repo_dir), "fetch", "--force", "origin",
+        f"refs/heads/{candidate.base_branch}:refs/remotes/origin/{candidate.base_branch}",
+        timeout=300,
+    )
+
     checkout = (
         config.work_dir / "worktrees" / candidate.repo.replace("/", "-")
         / f"pr-{candidate.number}-{candidate.head_sha[:7]}"
@@ -110,9 +118,10 @@ def render_prompt(
 
 
 def tab_label(candidate: ReviewCandidate, agent: str) -> str:
-    return f"{candidate.repo.rsplit('/', 1)[-1]} #{candidate.number} {agent} review"
+    """Label one agent's tab: the full repo, PR, and head commit, so equal labels share a checkout."""
+    return f"{review_marker(candidate)}{candidate.head_sha[:7]} {agent} review"
 
 
 def review_marker(candidate: ReviewCandidate) -> str:
-    """The tab-label prefix shared by every agent's tab for this PR."""
-    return f"{candidate.repo.rsplit('/', 1)[-1]} #{candidate.number} "
+    """The tab-label prefix shared by every agent's tab for this PR, at any commit."""
+    return f"{candidate.repo} #{candidate.number} "

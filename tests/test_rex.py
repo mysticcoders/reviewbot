@@ -11,12 +11,12 @@ from reviewbot.config import load
 from reviewbot.github import QueueStatus, ReviewCandidate
 from reviewbot.launch import LaunchError
 
-LABEL = "demo #12 claude review"
+LABEL = "acme/demo #12 abcdef1 claude review"
 
 
-def candidate(number: int = 12) -> ReviewCandidate:
+def candidate(number: int = 12, repo: str = "acme/demo") -> ReviewCandidate:
     return ReviewCandidate(
-        repo="acme/demo", number=number, title="Fix", author="author",
+        repo=repo, number=number, title="Fix", author="author",
         url="https://github.com/acme/demo/pull/12", updated_at="now",
         head_sha="abcdef123456", head_branch="fix", base_branch="main",
         is_draft=False, review_decision="REVIEW_REQUIRED", request_source="direct",
@@ -148,7 +148,8 @@ def test_prompt_and_wait_maps_script_exits_to_errors(fake):
 
 def test_active_review_keys_matches_tab_labels_in_any_session(tmp_path, fake):
     fake(windows=[window(LABEL, "block:a"), window("notes", "block:n")])
-    keys = rex.active_review_keys(rex_config(tmp_path), [candidate(), candidate(13)])
+    candidates = [candidate(), candidate(13), candidate(repo="other/demo")]
+    keys = rex.active_review_keys(rex_config(tmp_path), candidates)
     assert keys == {"acme/demo#12"}
 
 

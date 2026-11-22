@@ -4,6 +4,13 @@ You are in a detached worktree at the exact PR head {head_sha}; the base branch 
 {base_branch}. This is the opening pass before other reviewers weigh in, so your job is to
 understand the change, not to hunt for defects.
 
+Before reviewing, verify HEAD is {head_sha}. Use the refreshed remote-tracking base
+origin/{base_branch}, never the potentially stale local {base_branch}. Resolve and record
+its SHA, the merge base with HEAD, and the changed-file list using the three-dot diff.
+If the base cannot be verified, state that limitation instead of assuming the scope.
+Keep pre-existing repository issues separate from PR findings unless this PR newly exposes
+the behavior. Include the reviewed head/base SHAs in the result.
+
 Read the PR diff and enough surrounding code to explain it. Then write:
 
 ## What this PR does

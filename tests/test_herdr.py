@@ -1,25 +1,29 @@
+import json
 import re
 from pathlib import Path
 
 import pytest
 
+from reviewbot import herdr
 from reviewbot.config import Agent, load
 from reviewbot.github import QueueStatus, ReviewCandidate
 from reviewbot.herdr import (
     AGENT_NAME_MAX,
     _agent_name,
+    _existing_tab_pane,
     _pane_ids,
     _start_agent_with_retry,
+    active_review_keys,
 )
-from reviewbot.launch import LaunchError, render_prompt
+from reviewbot.launch import LaunchError, render_prompt, review_marker, tab_label
 from reviewbot.run import launch_review
 
 
-def candidate() -> ReviewCandidate:
+def candidate(repo: str = "acme/demo", number: int = 12, sha: str = "abcdef123456") -> ReviewCandidate:
     return ReviewCandidate(
-        repo="acme/demo", number=12, title="Fix", author="author",
+        repo=repo, number=number, title="Fix", author="author",
         url="https://github.com/acme/demo/pull/12", updated_at="now",
-        head_sha="abcdef123456", head_branch="fix", base_branch="main",
+        head_sha=sha, head_branch="fix", base_branch="main",
         is_draft=False, review_decision="REVIEW_REQUIRED", request_source="direct",
         last_review_state="CHANGES_REQUESTED", last_review_sha="123456789",
         commits_since_review=2, checks="passing", status=QueueStatus.UPDATED,
@@ -88,11 +92,11 @@ def test_launch_review_uses_each_agents_kind_args_and_prompt(tmp_path, monkeypat
 
     monkeypatch.setattr("reviewbot.herdr._run", fake_run)
     monkeypatch.setattr("reviewbot.run.prepare_checkout", lambda c, cand: tmp_path)
-    monkeypatch.setattr("reviewbot.herdr._existing_tab_pane", lambda label: next(panes))
+    monkeypatch.setattr("reviewbot.herdr._existing_tab_pane", lambda label, checkout: next(panes))
     results = launch_review(config, candidate(), agent="pair")
 
     assert [r.tab_label for r in results] == [
-        "demo #12 claude review", "demo #12 codex review",
+        "acme/demo #12 abcdef1 claude review", "acme/demo #12 abcdef1 codex review",
     ]
     starts = [c for c in calls if c[:3] == ("herdr", "agent", "start")]
     assert starts[0][5:] == ("claude", "--pane", "pane-1", "--timeout", "120000",
@@ -119,15 +123,52 @@ def test_launch_review_fails_before_checkout_when_prompt_missing(tmp_path, monke
 def test_agent_name_is_valid_for_herdr():
     pattern = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
     cases = [
-        ("acme/demo", 12, "claude"),
-        ("Org/My.Service_API", 4821, "codex"),
-        ("org/a-really-long-repository-name-that-overflows", 123456, "claude"),
-        ("org/...", 7, "codex"),
+        candidate("acme/demo", 12),
+        candidate("Org/My.Service_API", 4821),
+        candidate("org/a-really-long-repository-name-that-overflows", 123456),
+        candidate("org/...", 7),
     ]
-    for repo, number, agent in cases:
-        name = _agent_name(repo, number, agent)
-        assert pattern.match(name), name
-        assert len(name) <= AGENT_NAME_MAX
-        assert name.endswith(f"-{number}-{agent}")
-    assert _agent_name("acme/demo", 12, "claude") == "review-demo-12-claude"
-    assert _agent_name("Org/My.Service_API", 4821, "codex") == "review-my-service_api-4821-codex"
+    for item in cases:
+        for agent in ("claude", "codex-deep-review"):
+            name = _agent_name(item, agent)
+            assert pattern.match(name), name
+            assert len(name) <= AGENT_NAME_MAX
+    assert _agent_name(candidate(), "claude").startswith("review-demo-12-claude-")
+
+
+def test_review_identities_differ_by_owner_and_commit():
+    base = candidate()
+    other_owner = candidate(repo="other/demo")
+    moved = candidate(sha="0123456789ab")
+    names = {_agent_name(item, "claude") for item in (base, other_owner, moved)}
+    assert len(names) == 3
+    labels = {tab_label(item, "claude") for item in (base, other_owner, moved)}
+    assert len(labels) == 3
+    assert review_marker(base) != review_marker(other_owner)
+
+
+def snapshot(tabs, panes):
+    return json.dumps({"result": {"snapshot": {"tabs": tabs, "panes": panes}}})
+
+
+def test_active_review_keys_match_whole_repo_names(monkeypatch):
+    labels = ["bacme/demo #12 abcdef1 claude review", "acme/demo #120 abcdef1 claude review"]
+    tabs = [{"tab_id": str(i), "label": label} for i, label in enumerate(labels)]
+    monkeypatch.setattr(herdr, "_run", lambda *a, **k: snapshot(tabs, []))
+    assert active_review_keys(None, [candidate()]) == set()
+    tabs.append({"tab_id": "x", "label": tab_label(candidate(), "codex")})
+    assert active_review_keys(None, [candidate(), candidate("other/demo")]) == {"acme/demo#12"}
+
+
+def test_reused_tab_must_still_be_in_the_pr_checkout(tmp_path, monkeypatch):
+    checkout = tmp_path / "pr-12-abcdef1"
+    checkout.mkdir()
+    label = tab_label(candidate(), "claude")
+    tabs = [{"tab_id": "t", "label": label}]
+    pane = {"tab_id": "t", "pane_id": "p", "cwd": str(checkout)}
+    monkeypatch.setattr(herdr, "_run", lambda *a, **k: snapshot(tabs, [pane]))
+    assert _existing_tab_pane(label, checkout) == "p"
+    pane["cwd"] = str(tmp_path / "pr-12-0123456")
+    with pytest.raises(LaunchError, match="not the PR checkout"):
+        _existing_tab_pane(label, checkout)
+    assert _existing_tab_pane(tab_label(candidate(sha="0123456789ab"), "claude"), checkout) is None

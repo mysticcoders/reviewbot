@@ -125,7 +125,7 @@ def test_gitlab_web_command_needs_glab(monkeypatch, installed, expected):
     # glab keeps its configured protocol (SSH or HTTPS) only when given the path, with the
     # host in GITLAB_HOST; given an https:// URL, it clones over HTTPS.
     (True, (("glab", "repo", "clone", "camp/tool", "DEST"), {"GITLAB_HOST": HOST})),
-    (False, (("git", "clone", f"https://{HOST}/camp/tool.git", "DEST"), None)),
+    (False, (("git", "clone", f"git@{HOST}:camp/tool.git", "DEST"), None)),
 ])
 def test_gitlab_clone_prefers_glab(monkeypatch, installed, expected):
     from reviewbot import gitlab

@@ -188,14 +188,21 @@ def head_ref(number: int) -> str:
 
 
 def clone(repo: str, destination: Path) -> None:
-    """Clone `host/path` with `glab` when it is installed, else with plain `git` over HTTPS.
+    """Clone `host/path` with `glab` when it is installed, else with plain `git` over SSH.
 
+    `glab` gets the path and the host in GITLAB_HOST, so it keeps its configured protocol;
+    given an https:// URL it would clone over HTTPS. Without `glab`, SSH is used, because
+    ReviewBot is meant for projects where the user has write access and an SSH key.
     Raises LaunchError when the clone fails or takes longer than ten minutes.
     """
+    host, path = repo.split("/", 1)
     if shutil.which("glab"):
-        run_command("glab", "repo", "clone", f"https://{repo}", str(destination), timeout=600)
+        run_command(
+            "glab", "repo", "clone", path, str(destination), timeout=600,
+            env={"GITLAB_HOST": host},
+        )
     else:
-        run_command("git", "clone", f"https://{repo}.git", str(destination), timeout=600)
+        run_command("git", "clone", f"git@{host}:{path}.git", str(destination), timeout=600)
 
 
 def auth_status(host: str) -> tuple[bool, str]:

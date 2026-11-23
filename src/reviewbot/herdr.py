@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import Agent, Config
-from .github import ReviewCandidate
 from .launch import LaunchError, LaunchResult, review_marker, run_command, tab_label
+from .models import ReviewCandidate
 
 _run = run_command
 

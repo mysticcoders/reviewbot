@@ -29,3 +29,18 @@ A PR shows the first status that applies, in this order:
 | `waiting` | The PR waits for the requested reviews. |
 
 One exception to the order: when nobody requested changes, a stale review gives `re-review` only if no status from `checks-failing` to `approved` applies.
+
+## GitLab merge requests
+
+GitLab does not record which commit a review was for. So ReviewBot compares times:
+
+- Your review is your latest approval or change request on the MR.
+- `updated` means that someone pushed to the MR after your review.
+- `changes-requested` means that your latest review requested changes, and nobody pushed since.
+- `reviewed` means that your latest review was an approval, and nobody pushed since.
+- `ready` means that you have not reviewed the MR.
+
+Not included yet:
+
+- Approval rules. An MR asks for your review only when it lists you as a reviewer.
+- For MRs, the prompt placeholder `{review_decision}` is `none`, and `{commits_since_review}` is `0`.

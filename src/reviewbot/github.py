@@ -1,55 +1,32 @@
-"""GitHub CLI access and PR review-status classification."""
+"""GitHub access through the `gh` CLI: the queues, PR status classification, and launch helpers."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
-from enum import Enum
+import re
+import shutil
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from .config import Scope
+from .models import (
+    AuthoredPR,
+    AuthoredStatus,
+    ForgeError,
+    Notification,
+    QueueStatus,
+    ReviewCandidate,
+    ReviewerStatus,
+)
+from .process import run_command
+
+NAME, CHANGE, CHANGE_ABBR = "GitHub", "pull request", "PR"
 
 
-class GhError(Exception):
-    pass
-
-
-class QueueStatus(str, Enum):
-    READY = "ready"
-    UPDATED = "updated"
-    REVIEWED = "reviewed"
-    CHANGES_REQUESTED = "changes-requested"
-    DRAFT = "draft"
-
-
-@dataclass(frozen=True)
-class ReviewCandidate:
-    repo: str
-    number: int
-    title: str
-    author: str
-    url: str
-    updated_at: str
-    head_sha: str
-    head_branch: str
-    base_branch: str
-    is_draft: bool
-    review_decision: str
-    request_source: str
-    last_review_state: str | None
-    last_review_sha: str | None
-    commits_since_review: int
-    checks: str
-    status: QueueStatus
-
-    @property
-    def key(self) -> str:
-        return f"{self.repo}#{self.number}"
-
-    @property
-    def actionable(self) -> bool:
-        return self.status in {QueueStatus.READY, QueueStatus.UPDATED}
+class GhError(ForgeError):
+    """A `gh` command failed, or GitHub returned data ReviewBot cannot read."""
 
 
 _TRANSIENT_MARKERS = (
@@ -227,82 +204,6 @@ async def review_queue(scope: Scope) -> list[ReviewCandidate]:
     return sorted(candidates, key=lambda item: item.updated_at, reverse=True)
 
 
-class AuthoredStatus(str, Enum):
-    DRAFT = "draft"
-    CONFLICTS = "conflicts"
-    CHANGES_REQUESTED = "changes-requested"
-    CHECKS_FAILING = "checks-failing"
-    NEEDS_REVIEWERS = "needs-reviewers"
-    RE_REVIEW = "re-review"
-    APPROVED = "approved"
-    WAITING = "waiting"
-
-
-@dataclass(frozen=True)
-class ReviewerStatus:
-    name: str
-    is_team: bool
-    state: str
-    requested: bool
-    stale: bool
-
-    @property
-    def label(self) -> str:
-        if self.requested:
-            return "requested" if self.state == "PENDING" else "re-requested"
-        state = self.state.lower().replace("_", "-")
-        return f"{state} (stale)" if self.stale else state
-
-    @property
-    def needs_rerequest(self) -> bool:
-        return not self.requested and not self.is_team and (
-            self.stale or self.state == "CHANGES_REQUESTED"
-        )
-
-
-@dataclass(frozen=True)
-class AuthoredPR:
-    repo: str
-    number: int
-    title: str
-    url: str
-    updated_at: str
-    head_sha: str
-    head_branch: str
-    base_branch: str
-    is_draft: bool
-    review_decision: str
-    mergeable: str
-    checks: str
-    reviewers: list[ReviewerStatus]
-    suggested: list[str]
-    status: AuthoredStatus
-
-    @property
-    def key(self) -> str:
-        return f"{self.repo}#{self.number}"
-
-    @property
-    def rerequest_targets(self) -> list[str]:
-        return [reviewer.name for reviewer in self.reviewers if reviewer.needs_rerequest]
-
-    @property
-    def reviewer_summary(self) -> str:
-        counts: dict[str, int] = {}
-        for reviewer in self.reviewers:
-            if reviewer.requested:
-                bucket = "waiting"
-            elif reviewer.state == "APPROVED":
-                bucket = "approved"
-            elif reviewer.state == "CHANGES_REQUESTED":
-                bucket = "changes"
-            else:
-                bucket = "commented"
-            counts[bucket] = counts.get(bucket, 0) + 1
-        order = ("approved", "changes", "waiting", "commented")
-        return ", ".join(f"{counts[k]} {k}" for k in order if k in counts) or "none"
-
-
 _AUTHORED_QUERY = """
 query($q: String!) {
   search(query: $q, type: ISSUE, first: 100) {
@@ -456,28 +357,6 @@ async def request_reviewers(repo: str, number: int, reviewers: list[str]) -> Non
 NOTIFICATION_KINDS = {"PullRequest": "pr", "Issue": "issue"}
 
 
-@dataclass(frozen=True)
-class Notification:
-    """One unread GitHub notification thread about a pull request or issue."""
-
-    id: str
-    repo: str
-    kind: str
-    number: int
-    title: str
-    reason: str
-    updated_at: str
-    url: str
-
-    @property
-    def key(self) -> str:
-        return f"{self.repo}#{self.number}"
-
-    @property
-    def reason_label(self) -> str:
-        return self.reason.replace("_", " ")
-
-
 def _notification(thread: dict[str, Any]) -> Notification | None:
     """Build a Notification from a REST thread, or None for kinds ReviewBot does not show."""
     subject = thread.get("subject") or {}
@@ -511,3 +390,44 @@ async def mark_notification_read(thread_id: str) -> None:
     if not thread_id.isdigit():
         raise GhError(f"not a notification thread ID: {thread_id}")
     await _run("gh", "api", "-X", "PATCH", f"notifications/threads/{thread_id}", "--silent")
+
+
+TARGET = re.compile(r"(?:https://github\.com/)?([^/#\s]+/[^/#\s]+)(?:#|/pull/)(\d+)/?")
+
+
+def parse_target(text: str) -> tuple[str, int] | None:
+    """Read `owner/repo#number` or a GitHub PR URL into the repository and PR number.
+
+    Surrounding spaces are ignored. Returns None when the text is neither form.
+    """
+    match = TARGET.fullmatch(text.strip())
+    return (match.group(1), int(match.group(2))) if match else None
+
+
+def head_ref(number: int) -> str:
+    """The ref that holds a PR's head commit on GitHub."""
+    return f"pull/{number}/head"
+
+
+def clone(repo: str, destination: Path) -> None:
+    """Clone a repository with `gh`, so its auth and protocol settings apply.
+
+    Raises LaunchError when the clone fails or takes longer than ten minutes.
+    """
+    run_command("gh", "repo", "clone", repo, str(destination), timeout=600)
+
+
+def auth_status() -> tuple[bool, str]:
+    """Whether `gh` is signed in, with a short detail for `reviewbot doctor`."""
+    result = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, check=False)
+    return (True, "authenticated") if result.returncode == 0 else (False, "run `gh auth login`")
+
+
+def web_command(kind: str, repo: str, number: int) -> list[str] | None:
+    """The `gh` command that opens a PR (`kind` "pr") or issue ("issue") in the browser.
+
+    Returns None when `gh` is not installed; the caller then opens the URL itself.
+    """
+    if shutil.which("gh") is None:
+        return None
+    return ["gh", kind, "view", str(number), "--repo", repo, "--web"]

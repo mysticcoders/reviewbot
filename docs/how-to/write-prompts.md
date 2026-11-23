@@ -10,7 +10,7 @@ The bundled templates tell the agent not to edit, push, comment or submit a revi
 
 ## Use placeholders
 
-Write `{name}` to insert a value, for example `{title}` or `{head_sha}`. ReviewBot leaves any other `{...}` text as it is. For the full list, see [Placeholders](../reference/prompts.md#placeholders).
+Write `{name}` to insert a value, for example `{title}` or `{head_sha}`. To make one prompt work for GitHub and GitLab, write `{forge}`, `{change}` and `{change_abbr}` in place of "GitHub", "pull request" and "PR". ReviewBot leaves any other `{...}` text as it is. For the full list, see [Placeholders](../reference/prompts.md#placeholders).
 
 ## Point an agent at a prompt
 

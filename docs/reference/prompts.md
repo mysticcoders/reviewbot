@@ -21,7 +21,9 @@ ReviewBot fills in these placeholders. It leaves any other `{...}` text as it is
 
 | Placeholder | Value |
 | --- | --- |
-| `{key}` | `owner/repo#number` |
+| `{key}` | `owner/repo#number` on GitHub; `host/group/project!number` on GitLab. |
+| `{forge}` | `GitHub` or `GitLab`. |
+| `{change}`, `{change_abbr}` | `pull request` and `PR` on GitHub; `merge request` and `MR` on GitLab. |
 | `{repo}`, `{number}`, `{title}`, `{author}`, `{url}` | The identity of the PR. |
 | `{head_sha}`, `{head_branch}`, `{base_branch}` | The checked-out commit and the branches. |
 | `{request_source}` | `direct`, or `team:<slug>`. |

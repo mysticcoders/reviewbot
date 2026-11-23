@@ -25,6 +25,7 @@ to submit.
 | --- | --- | --- |
 | Python 3.11+ and [uv](https://docs.astral.sh/uv/) | runs ReviewBot | `brew install uv` or `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | [GitHub CLI](https://cli.github.com) (`gh`) | all GitHub queries, cloning | `brew install gh` |
+| [GitLab CLI](https://gitlab.com/gitlab-org/cli) (`glab`) | only to watch GitLab: its queries | `brew install glab` |
 | `git` | worktrees per PR | usually preinstalled |
 | Herdr 0.7+ or [Rex](https://www.superlogical.com/rex/docs) | terminal multiplexer that hosts the agent sessions | see each project's docs |
 | One or more agent CLIs | performs the review | per agent, e.g. [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex) |

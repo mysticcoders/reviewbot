@@ -1,4 +1,4 @@
-Other reviewers have now reviewed pull request {key} at {head_sha}. Their reviews follow.
+Other reviewers have now reviewed {change} {key} at {head_sha}. Their reviews follow.
 
 {prior_reviews}
 
@@ -18,4 +18,4 @@ Substantive issues that none of the reviews raised, including ones you missed ea
 Your updated overall assessment in two or three sentences, noting anything you changed
 your mind about and why.
 
-Do not edit the branch, push commits, submit a GitHub review, or post comments.
+Do not edit the branch, push commits, submit a {forge} review, or post comments.

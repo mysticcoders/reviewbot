@@ -189,7 +189,7 @@ function renderNotes(items, error) {
   const box = document.getElementById("notes");
   box.replaceChildren();
   document.getElementById("notes-count").textContent = items.length ? `${items.length}` : "";
-  if (error) box.append(el("div", { class: "error" }, `GitHub query failed: ${error}`));
+  if (error) box.append(el("div", { class: "error" }, `Query failed: ${error}`));
   if (!items.length && !error) {
     box.append(el("div", { class: "empty" }, "Nothing unread."));
     return;
@@ -231,7 +231,7 @@ function render(target, countTarget, items, error, detail) {
   const box = document.getElementById(target);
   box.replaceChildren();
   document.getElementById(countTarget).textContent = items.length ? `${items.length}` : "";
-  if (error) box.append(el("div", { class: "error" }, `GitHub query failed: ${error}`));
+  if (error) box.append(el("div", { class: "error" }, `Query failed: ${error}`));
   if (!items.length && !error) {
     box.append(el("div", { class: "empty" }, "Nothing here."));
     return;

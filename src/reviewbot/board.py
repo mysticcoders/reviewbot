@@ -11,17 +11,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Config, Serve
+from .forge import review_queue
 from .github import (
-    AuthoredPR,
-    GhError,
-    Notification,
-    ReviewCandidate,
     authored_prs,
     mark_notification_read,
     notifications,
-    review_queue,
 )
 from .launch import LaunchError
+from .models import AuthoredPR, ForgeError, Notification, ReviewCandidate
 from .multiplexer import active_review_keys
 
 STALE_SECONDS = 120
@@ -51,6 +48,7 @@ def candidate_json(candidate: ReviewCandidate, active: set[str]) -> dict[str, An
         "head_branch": candidate.head_branch,
         "last_review_state": candidate.last_review_state,
         "commits_since_review": candidate.commits_since_review,
+        "forge": candidate.forge,
     }
 
 
@@ -151,9 +149,9 @@ class Board:
             now = time.time()
             if force or now - self.queue_at > STALE_SECONDS:
                 try:
-                    candidates = asyncio.run(review_queue(self.config.scope))
+                    candidates = asyncio.run(review_queue(self.config))
                     active = active_review_keys(self.config, candidates)
-                except (GhError, LaunchError, OSError) as error:
+                except (ForgeError, LaunchError, OSError) as error:
                     with self._lock:
                         self.errors["queue"] = str(error)
                 else:
@@ -161,7 +159,7 @@ class Board:
             if force or now - self.mine_at > STALE_SECONDS:
                 try:
                     authored = asyncio.run(authored_prs(self.config.scope))
-                except (GhError, OSError) as error:
+                except (ForgeError, OSError) as error:
                     with self._lock:
                         self.errors["mine"] = str(error)
                 else:
@@ -169,7 +167,7 @@ class Board:
             if force or now - self.notes_at > STALE_SECONDS:
                 try:
                     notes = asyncio.run(notifications(self.config.scope))
-                except (GhError, OSError) as error:
+                except (ForgeError, OSError) as error:
                     with self._lock:
                         self.errors["notifications"] = str(error)
                 else:

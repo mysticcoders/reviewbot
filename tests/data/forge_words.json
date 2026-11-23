@@ -1,0 +1,4 @@
+[
+  {"forge": "github", "repo": "acme/api", "expected": {"forge": "GitHub", "change": "pull request", "change_abbr": "PR"}},
+  {"forge": "gitlab", "repo": "gitlab.example.org/camp/tool", "expected": {"forge": "GitLab", "change": "merge request", "change_abbr": "MR"}}
+]

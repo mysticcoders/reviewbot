@@ -39,7 +39,7 @@ Put the top-level settings before the first `[...]` line. Otherwise TOML reads t
 
 | Setting | Required | Value |
 | --- | --- | --- |
-| `watch` | yes | A list of owners or `OWNER/REPO` entries, or `["*"]`. GitHub URLs are accepted. See [Choose which repositories to watch](../how-to/choose-what-to-watch.md). |
+| `watch` | yes | A list of GitHub owners or `OWNER/REPO` entries, `["*"]` for all of GitHub, and `HOST/PATH` entries on a `[[forges]]` host. URLs are accepted. See [Choose which repositories to watch](../how-to/choose-what-to-watch.md). |
 | `multiplexer` | yes | `"herdr"` or `"rex"`. |
 | `work_dir` | no | The directory for cached clones and PR worktrees. The default is `~/reviewbot-workspaces`. |
 | `prompt` | no | The prompt file for each agent that has no `prompt` of its own. |
@@ -105,13 +105,22 @@ See [Serve the dashboard and MCP endpoint](../how-to/serve-the-dashboard.md).
 | `browser` | yes | On macOS, an app name for `open -a`. On Linux, a command that ReviewBot runs with the URL. |
 | `hostname` | with `tailscale-node` | The device name on the tailnet: 1–63 lowercase letters, digits or `-`, not starting or ending with `-`. Not allowed with the other `bind` values. |
 
+## Forges
+
+Each `[[forges]]` table names the kind of one non-GitHub host. Each host in a `watch` entry needs one.
+
+| Field | Required | Value |
+| --- | --- | --- |
+| `host` | yes | The host name, for example `gitlab.example.org`. Not `github.com`. Each host appears once. |
+| `kind` | yes | `"gitlab"`. |
+
 ## Checkouts
 
 Each `[[checkouts]]` table makes ReviewBot reuse an existing local clone, not clone into `work_dir`.
 
 | Field | Required | Value |
 | --- | --- | --- |
-| `repo` | yes | `OWNER/REPO`. |
+| `repo` | yes | `OWNER/REPO`, or `HOST/PATH` for a GitLab project. |
 | `path` | yes | The path of the local clone. |
 
 ReviewBot only fetches refs into a reused clone and adds detached worktrees beside it. It never changes the branch that the clone has checked out. ReviewBot clones each repository without a `[[checkouts]]` entry into `<work_dir>/repos/` at its first launch.

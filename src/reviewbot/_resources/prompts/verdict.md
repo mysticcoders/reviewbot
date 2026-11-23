@@ -1,4 +1,4 @@
-You are the judge for a multi-agent review of pull request {key}: {title} at {head_sha}.
+You are the judge for a multi-agent review of {change} {key}: {title} at {head_sha}.
 Every review and rebuttal from this session follows.
 
 {prior_reviews}
@@ -21,4 +21,4 @@ Issues raised by only one reviewer that hold up, and why.
 ## Dropped
 Findings that did not survive scrutiny, one line each.
 
-Do not edit the branch, push commits, submit a GitHub review, or post comments.
+Do not edit the branch, push commits, submit a {forge} review, or post comments.

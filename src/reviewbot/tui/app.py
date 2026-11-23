@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import webbrowser
 from datetime import UTC, datetime
 from typing import ClassVar
 
@@ -23,20 +24,18 @@ from textual.widgets import (
     TabPane,
 )
 
+from .. import forge
 from ..board import Board, OpenError, open_in_browser
 from ..config import Config
+from ..forge import review_queue
 from ..github import (
-    AuthoredPR,
-    GhError,
-    Notification,
-    ReviewCandidate,
     authored_prs,
     mark_notification_read,
     notifications,
     request_reviewers,
-    review_queue,
 )
 from ..launch import LaunchError
+from ..models import AuthoredPR, ForgeError, Notification, ReviewCandidate
 from ..multiplexer import active_review_keys
 from ..run import collects, launch_review
 from ..server import Dashboard, ServeError
@@ -411,9 +410,9 @@ class ReviewQueueApp(App[None]):
             return
         self._status_line.update(f"Fetching review requests in {self.config.scope.describe()}…")
         try:
-            candidates = await review_queue(self.config.scope)
+            candidates = await review_queue(self.config)
             active = await asyncio.to_thread(active_review_keys, self.config, candidates)
-        except (GhError, LaunchError, OSError) as error:
+        except (ForgeError, LaunchError, OSError) as error:
             self._status_line.update(f"[red]Refresh failed:[/red] {error}")
             return
         selected = self._selected()
@@ -473,7 +472,7 @@ class ReviewQueueApp(App[None]):
             self._status_line.update(f"Fetching your open PRs in {self.config.scope.describe()}…")
         try:
             authored = await authored_prs(self.config.scope)
-        except (GhError, OSError) as error:
+        except (ForgeError, OSError) as error:
             self._status_line.update(f"[red]My PRs refresh failed:[/red] {error}")
             return
         row = self._mine_table.cursor_row
@@ -504,7 +503,7 @@ class ReviewQueueApp(App[None]):
             self._status_line.update(f"Fetching notifications in {self.config.scope.describe()}…")
         try:
             notes = await notifications(self.config.scope)
-        except (GhError, OSError) as error:
+        except (ForgeError, OSError) as error:
             if not quiet or self._on_notes:
                 self._status_line.update(f"[red]Notifications refresh failed:[/red] {error}")
             return
@@ -548,7 +547,7 @@ class ReviewQueueApp(App[None]):
         self._marking = True
         try:
             await mark_notification_read(note.id)
-        except (GhError, OSError) as error:
+        except (ForgeError, OSError) as error:
             self._status_line.update(f"[red]Mark read failed:[/red] {error}")
             return False
         finally:
@@ -589,22 +588,23 @@ class ReviewQueueApp(App[None]):
             if note is None:
                 return
             command = "pr" if note.kind == "pr" else "issue"
-            self._open_web(command, note.number, note.repo)
+            self._open_web(command, note.number, note.repo, note.url)
             if await self._mark_read(note):
                 self._status_line.update(f"Opening {note.url} · marked read")
             return
         target = self._selected_mine() if self._on_mine else self._selected()
         if target is None:
             return
-        self._open_web("pr", target.number, target.repo)
+        self._open_web("pr", target.number, target.repo, target.url)
         self._status_line.update(f"Opening {target.url}")
 
-    def _open_web(self, command: str, number: int, repo: str) -> None:
-        subprocess.Popen(
-            ["gh", command, "view", str(number), "--repo", repo, "--web"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+    def _open_web(self, command: str, number: int, repo: str, url: str) -> None:
+        """Open a PR or issue with the forge's CLI, or the URL in the default browser without it."""
+        args = forge.backend(self.config, repo).web_command(command, repo, number)
+        if args is None:
+            webbrowser.open(url)
+            return
+        subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     async def _request(self, pr: AuthoredPR, reviewers: list[str]) -> None:
         if not reviewers or self._requesting:
@@ -614,7 +614,7 @@ class ReviewQueueApp(App[None]):
         self._status_line.update(f"Requesting review from {names} on {pr.key}…")
         try:
             await request_reviewers(pr.repo, pr.number, reviewers)
-        except (GhError, OSError) as error:
+        except (ForgeError, OSError) as error:
             self._status_line.update(f"[red]Request failed:[/red] {error}")
             return
         finally:

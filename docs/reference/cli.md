@@ -14,7 +14,7 @@ Run `reviewbot --help`, or `reviewbot <command> --help`, for every option.
 | `reviewbot agents` | Lists the configured agents, groups, combats and keys. |
 | `reviewbot runs` | Lists background runs and their progress. |
 | `reviewbot next` | Shows the most recent actionable review request. |
-| `reviewbot launch <pr> --agent <name>` | Launches a review of one PR. |
+| `reviewbot launch <pr> --agent <name>` | Launches a review of one PR or MR: `owner/repo#12`, `host/group/project!12`, or its URL. |
 | `reviewbot serve` | Serves the dashboard and the HTTP MCP endpoint. |
 | `reviewbot token` | Prints the token, the dashboard login URL and the MCP setup. |
 | `reviewbot mcp` | Runs the MCP server over stdio. |

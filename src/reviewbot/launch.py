@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import forge
 from .config import Config
-from .github import ReviewCandidate
+from .models import ReviewCandidate
+from .process import LaunchError, run_command
 
-
-class LaunchError(Exception):
-    pass
+__all__ = ["LaunchError", "LaunchResult", "run_command"]
 
 
 @dataclass(frozen=True)
@@ -25,19 +24,6 @@ class LaunchResult:
     handle: str
 
 
-def run_command(*args: str, timeout: float | None = 120, input: str | None = None) -> str:
-    """Run a command and return its stdout, raising LaunchError with its stderr on failure."""
-    try:
-        result = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout, check=False, input=input,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise LaunchError(f"could not run {' '.join(args)}: {error}") from error
-    if result.returncode:
-        raise LaunchError(result.stderr.strip() or f"{' '.join(args)} exited {result.returncode}")
-    return result.stdout.strip()
-
-
 def _repo_dir(config: Config, candidate: ReviewCandidate) -> Path:
     for checkout in config.checkouts:
         if checkout.slug.lower() == candidate.repo.lower() and (checkout.path / ".git").exists():
@@ -47,10 +33,11 @@ def _repo_dir(config: Config, candidate: ReviewCandidate) -> Path:
 
 def prepare_checkout(config: Config, candidate: ReviewCandidate) -> Path:
     """Create or reuse a detached worktree at the exact requested PR SHA."""
+    host = forge.backend(config, candidate.repo)
     repo_dir = _repo_dir(config, candidate)
     if not repo_dir.exists():
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
-        run_command("gh", "repo", "clone", candidate.repo, str(repo_dir), timeout=600)
+        host.clone(candidate.repo, repo_dir)
     if not (repo_dir / ".git").exists():
         raise LaunchError(f"repository cache is not a Git checkout: {repo_dir}")
 
@@ -74,7 +61,7 @@ def prepare_checkout(config: Config, candidate: ReviewCandidate) -> Path:
 
     run_command(
         "git", "-C", str(repo_dir), "fetch", "--force", "origin",
-        f"pull/{candidate.number}/head", timeout=300,
+        host.head_ref(candidate.number), timeout=300,
     )
     fetched_sha = run_command("git", "-C", str(repo_dir), "rev-parse", "FETCH_HEAD")
     if fetched_sha != candidate.head_sha:
@@ -95,6 +82,7 @@ PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
 def prompt_fields(candidate: ReviewCandidate, agent: str) -> dict[str, str]:
     """Values available to prompt templates as `{name}` placeholders."""
+    host = forge.FORGES[candidate.forge]
     previous = "none"
     if candidate.last_review_state:
         previous = f"{candidate.last_review_state} at {(candidate.last_review_sha or '')[:7]}"
@@ -106,6 +94,7 @@ def prompt_fields(candidate: ReviewCandidate, agent: str) -> dict[str, str]:
         "review_decision": candidate.review_decision or "none", "checks": candidate.checks,
         "previous_review": previous,
         "commits_since_review": str(candidate.commits_since_review), "agent": agent,
+        "forge": host.NAME, "change": host.CHANGE, "change_abbr": host.CHANGE_ABBR,
     }
 
 
@@ -124,4 +113,4 @@ def tab_label(candidate: ReviewCandidate, agent: str) -> str:
 
 def review_marker(candidate: ReviewCandidate) -> str:
     """The tab-label prefix shared by every agent's tab for this PR, at any commit."""
-    return f"{candidate.repo} #{candidate.number} "
+    return f"{candidate.repo} {candidate.mark}{candidate.number} "

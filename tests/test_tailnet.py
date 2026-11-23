@@ -12,7 +12,7 @@ from reviewbot import cli
 from reviewbot import config as cfg
 from reviewbot.board import Board
 from reviewbot.config import ConfigError, load
-from reviewbot.server import COOKIE, Dashboard
+from reviewbot.server import Dashboard
 from reviewbot.tailnet import Node, TailnetError, known_dns, state_dir
 
 NODE = '[serve]\nport = 0\nbind = "tailscale-node"\nhostname = "reviewbot-test"\nbrowser = "Chrome"\n'

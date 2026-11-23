@@ -8,8 +8,9 @@ import shutil
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import IO, Callable
+from typing import IO
 
 from .config import Config
 

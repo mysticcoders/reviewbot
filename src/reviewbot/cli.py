@@ -8,10 +8,10 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from collections.abc import Callable
 from dataclasses import replace
 from importlib import resources
 from pathlib import Path
-from typing import Callable
 
 import click
 from rich.console import Console

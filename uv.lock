@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 
 [[package]]
@@ -136,12 +136,17 @@ wheels = [
 
 [[package]]
 name = "reviewbot"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "rich" },
     { name = "textual" },
+]
+
+[package.optional-dependencies]
+tailnet = [
+    { name = "reviewbot-tsnet", marker = "sys_platform == 'darwin'" },
 ]
 
 [package.dev-dependencies]
@@ -152,12 +157,22 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1" },
+    { name = "reviewbot-tsnet", marker = "sys_platform == 'darwin' and extra == 'tailnet'", url = "https://github.com/mysticcoders/reviewbot/releases/download/tsnet-v0.1.0/reviewbot_tsnet-0.1.0-py3-none-macosx_11_0_universal2.whl" },
     { name = "rich", specifier = ">=13" },
     { name = "textual", specifier = ">=0.80" },
 ]
+provides-extras = ["tailnet"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.1.1" }]
+
+[[package]]
+name = "reviewbot-tsnet"
+version = "0.1.0"
+source = { url = "https://github.com/mysticcoders/reviewbot/releases/download/tsnet-v0.1.0/reviewbot_tsnet-0.1.0-py3-none-macosx_11_0_universal2.whl" }
+wheels = [
+    { url = "https://github.com/mysticcoders/reviewbot/releases/download/tsnet-v0.1.0/reviewbot_tsnet-0.1.0-py3-none-macosx_11_0_universal2.whl", hash = "sha256:766bb8cb489c7cb047433c5a935fa9097d79f429d8a48fe09109e139a48d2899" },
+]
 
 [[package]]
 name = "rich"

@@ -519,7 +519,7 @@ def _serve_settings(
     if config.serve is None:
         raise click.ClickException(
             f"add a `[serve]` table (port, bind, browser) to {config.path}; "
-            "see 'Dashboard and MCP' in the README"
+            "see docs/how-to/serve-the-dashboard.md"
         )
     bind = bind or config.serve.bind
     if bind == "tailscale-node":

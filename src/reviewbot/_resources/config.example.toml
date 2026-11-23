@@ -13,7 +13,7 @@ watch = @WATCH@
 work_dir = "~/reviewbot-workspaces"
 
 # Prompt sent to every agent that does not set its own `prompt`. Relative
-# paths resolve against this file's directory. See README for placeholders.
+# paths resolve against this file's directory. See docs/reference/prompts.md for placeholders.
 # `reviewbot init` also writes walkthrough, tests, security, challenge, and
 # verdict templates into prompts/ for per-agent prompts and combat reviews.
 prompt = "prompts/review.md"

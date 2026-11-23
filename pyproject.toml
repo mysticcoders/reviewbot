@@ -1,6 +1,6 @@
 [project]
 name = "reviewbot"
-version = "0.3.0"
+version = "0.3.1"
 description = "Terminal UI for reviewing GitHub pull requests with your configured agents in Herdr"
 license = "MIT"
 requires-python = ">=3.11"
@@ -16,7 +16,7 @@ dependencies = [
 # prebuilt Go binary on its own GitHub release (tsnet-vX.Y.Z), versioned apart from
 # ReviewBot so it is rebuilt only when tsnet/ changes; tsnet/build_wheel.py builds it.
 tailnet = [
-    "reviewbot-tsnet @ https://github.com/mysticcoders/reviewbot/releases/download/tsnet-v0.1.0/reviewbot_tsnet-0.1.0-py3-none-macosx_11_0_universal2.whl ; sys_platform == 'darwin'",
+    "reviewbot-tsnet @ https://github.com/mysticcoders/reviewbot/releases/download/tsnet-v0.1.1/reviewbot_tsnet-0.1.1-py3-none-macosx_11_0_universal2.whl ; sys_platform == 'darwin'",
 ]
 
 [project.scripts]

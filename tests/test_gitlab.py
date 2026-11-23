@@ -122,15 +122,19 @@ def test_gitlab_web_command_needs_glab(monkeypatch, installed, expected):
 
 
 @pytest.mark.parametrize(("installed", "expected"), [
-    (True, ("glab", "repo", "clone", f"https://{HOST}/camp/tool", "DEST")),
-    (False, ("git", "clone", f"https://{HOST}/camp/tool.git", "DEST")),
+    # glab keeps its configured protocol (SSH or HTTPS) only when given the path, with the
+    # host in GITLAB_HOST; given an https:// URL, it clones over HTTPS.
+    (True, (("glab", "repo", "clone", "camp/tool", "DEST"), {"GITLAB_HOST": HOST})),
+    (False, (("git", "clone", f"https://{HOST}/camp/tool.git", "DEST"), None)),
 ])
 def test_gitlab_clone_prefers_glab(monkeypatch, installed, expected):
     from reviewbot import gitlab
 
     seen = []
     monkeypatch.setattr(gitlab.shutil, "which", lambda name: f"/bin/{name}" if installed else None)
-    monkeypatch.setattr(gitlab, "run_command", lambda *args, **kwargs: seen.append(args))
+    monkeypatch.setattr(
+        gitlab, "run_command", lambda *args, **kwargs: seen.append((args, kwargs.get("env"))),
+    )
     gitlab.clone(f"{HOST}/camp/tool", Path("DEST"))
     assert seen == [expected]
 

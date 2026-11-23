@@ -1,0 +1,11 @@
+[
+  {"text": "acme/api#12", "expected": ["acme/api", 12]},
+  {"text": "https://github.com/acme/api/pull/12", "expected": ["acme/api", 12]},
+  {"text": "https://github.com/acme/api/pull/12/", "expected": ["acme/api", 12]},
+  {"text": "  acme/api#12  ", "expected": ["acme/api", 12]},
+  {"text": "acme#12", "expected": null},
+  {"text": "acme/api/extra#12", "expected": null},
+  {"text": "acme/api#twelve", "expected": null},
+  {"text": "acme/api", "expected": null},
+  {"text": "https://gitlab.com/acme/api/-/merge_requests/12", "expected": null}
+]

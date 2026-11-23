@@ -248,3 +248,24 @@ def test_forge_queue_skips_unwatched_github(monkeypatch, tmp_path):
     monkeypatch.setattr(github, "review_queue", github_queue)
     monkeypatch.setattr(gitlab, "review_queue", gitlab_queue)
     assert asyncio.run(forge.review_queue(config)) == []
+
+
+WORDS = json.loads((DATA / "forge_words.json").read_text())
+TEMPLATES = sorted((Path(__file__).parents[1] / "src/reviewbot/_resources/prompts").glob("*.md"))
+
+
+@pytest.mark.parametrize("case", WORDS, ids=[case["forge"] for case in WORDS])
+def test_prompt_fields_name_the_forge(case):
+    from reviewbot.launch import prompt_fields
+
+    fields = prompt_fields(candidate(forge=case["forge"], repo=case["repo"]), "fake")
+    assert {name: fields[name] for name in case["expected"]} == case["expected"]
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=[path.name for path in TEMPLATES])
+def test_bundled_prompts_do_not_say_github_for_gitlab(template):
+    from reviewbot.launch import render_prompt
+
+    text = render_prompt(template.read_text(encoding="utf-8"), candidate(), "fake")
+    assert "{forge}" not in text and "{change" not in text
+    assert not re.search(r"GitHub|pull request|\bPRs?\b", text), text

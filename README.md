@@ -524,7 +524,7 @@ an agent can list your queue and open a PR in that browser for you. Add a
 ```toml
 [serve]
 port = 8765
-bind = "localhost"        # or "tailnet"
+bind = "localhost"        # or "tailnet", or "tailscale-node" (see below)
 browser = "Google Chrome" # a macOS app for `open -a`; elsewhere, a command run with the URL
 ```
 
@@ -555,6 +555,8 @@ Access is limited in layers:
 - **Binding.** `localhost` listens on `127.0.0.1` only. `tailnet` listens only
   on this machine's Tailscale address, never on every interface, so the page is
   reachable from your other tailnet devices but not your local network.
+  `tailscale-node` keeps the server on `127.0.0.1` and puts a separate tailnet
+  device in front of it (next section).
 - **Token.** Every HTTP request needs the token in
   `~/.config/reviewbot/serve-token` (created on first use, owner-only). MCP
   clients send `Authorization: Bearer <token>`. The browser opens the login
@@ -567,6 +569,48 @@ Access is limited in layers:
 Stdio MCP needs no token: the client starts `reviewbot mcp` as your own
 process. GitHub data is fetched on demand and cached for two minutes. When the
 TUI is serving, it shares its own fetches with the page.
+
+### ReviewBot's own tailnet device (macOS)
+
+`bind = "tailscale-node"` gives ReviewBot its own device on your tailnet, the
+way Rex's built-in Tailscale does. The machine does not need Tailscale
+installed. A small helper, `reviewbot-tsnet`, embeds Tailscale's `tsnet`,
+serves HTTPS with the device's certificate, and forwards requests to
+ReviewBot on `127.0.0.1`. It admits only requests from devices owned by the
+user who approved it, and the token is still required. Your tailnet needs
+MagicDNS and HTTPS certificates turned on.
+
+The helper is a prebuilt universal macOS binary, installed with the
+`tailnet` extra:
+
+```sh
+uv tool install --force "reviewbot[tailnet] @ git+https://github.com/mysticcoders/reviewbot"
+```
+
+```toml
+[serve]
+port = 8765                  # loopback port behind the device; 0 picks a free one
+bind = "tailscale-node"
+hostname = "reviewbot-brain" # the device name on your tailnet
+browser = "Google Chrome"
+```
+
+```sh
+reviewbot tailnet login   # approve the device once; prints and opens the sign-in link
+reviewbot serve           # https://reviewbot-brain.<tailnet>.ts.net/ and /mcp
+reviewbot token           # login URL and `claude mcp add` line for that address
+reviewbot tailnet logout  # sign the device out and delete its state
+```
+
+`serve` and `ctrl+w` in the TUI also show the sign-in link if the device is
+not approved yet. After `tailnet logout`, Tailscale still lists the device as
+expired until you remove it in the admin console under Machines. The device's
+state lives in
+`~/.config/reviewbot/tsnet/<hostname>/` (owner-only), and the helper's log is
+`helper.log` there. To build the helper yourself, run
+`uv run python tsnet/build_wheel.py VERSION` (needs Go), or
+`cd tsnet && go build -o ~/.local/bin/reviewbot-tsnet .`; ReviewBot also finds it
+on `PATH`.
 
 ## What a launch does
 

@@ -1,6 +1,6 @@
 [project]
 name = "reviewbot"
-version = "0.2.1"
+version = "0.3.0"
 description = "Terminal UI for reviewing GitHub pull requests with your configured agents in Herdr"
 license = "MIT"
 requires-python = ">=3.11"
@@ -11,12 +11,23 @@ dependencies = [
     "rich>=13",
 ]
 
+[project.optional-dependencies]
+# ReviewBot's own tailnet device (bind = "tailscale-node"), macOS only. The helper is a
+# prebuilt Go binary on its own GitHub release (tsnet-vX.Y.Z), versioned apart from
+# ReviewBot so it is rebuilt only when tsnet/ changes; tsnet/build_wheel.py builds it.
+tailnet = [
+    "reviewbot-tsnet @ https://github.com/mysticcoders/reviewbot/releases/download/tsnet-v0.1.0/reviewbot_tsnet-0.1.0-py3-none-macosx_11_0_universal2.whl ; sys_platform == 'darwin'",
+]
+
 [project.scripts]
 reviewbot = "reviewbot.cli:cli"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/reviewbot"]

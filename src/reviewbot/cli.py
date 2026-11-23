@@ -11,6 +11,7 @@ import tomllib
 from dataclasses import replace
 from importlib import resources
 from pathlib import Path
+from typing import Callable
 
 import click
 from rich.console import Console
@@ -511,21 +512,42 @@ def tui_command(watch: tuple[str, ...], watch_all: bool, serve: bool) -> None:
     run_tui(config, serve=serve)
 
 
-def _serve_settings(config: cfg.Config, port: int | None, bind: str | None) -> cfg.Serve:
+def _serve_settings(
+    config: cfg.Config, port: int | None, bind: str | None, hostname: str | None = None,
+) -> cfg.Serve:
     """The configured `[serve]` table with any command-line overrides applied."""
     if config.serve is None:
         raise click.ClickException(
-            f"add a `[serve]` table (port, bind, browser) to {config.path}; see 'Dashboard and MCP' in the README"
+            f"add a `[serve]` table (port, bind, browser) to {config.path}; "
+            "see 'Dashboard and MCP' in the README"
         )
+    bind = bind or config.serve.bind
+    if bind == "tailscale-node":
+        hostname = hostname or config.serve.hostname
+        if not hostname:
+            raise click.ClickException(
+                'bind = "tailscale-node" needs a device name: set `hostname` in `[serve]` '
+                "or pass --hostname"
+            )
+        if not cfg.NODE_NAME.fullmatch(hostname):
+            raise click.ClickException(f"--hostname `{hostname}` is not a valid device name")
+    elif hostname:
+        raise click.ClickException('--hostname only applies with --bind tailscale-node')
+    else:
+        hostname = None
     return replace(
         config.serve,
         port=config.serve.port if port is None else port,
-        bind=bind or config.serve.bind,
+        bind=bind,
+        hostname=hostname,
     )
 
 
 def serve_options(command):
-    """Add `--port` and `--bind` overrides of the `[serve]` table to a command."""
+    """Add `--port`, `--bind`, and `--hostname` overrides of the `[serve]` table to a command."""
+    command = click.option(
+        "--hostname", default=None, help="Override `[serve]` hostname (tailscale-node only).",
+    )(command)
     command = click.option(
         "--bind", type=click.Choice(cfg.BINDS), default=None, help="Override `[serve]` bind.",
     )(command)
@@ -534,31 +556,50 @@ def serve_options(command):
     )(command)
 
 
+def _announce_login(serve: cfg.Serve) -> Callable[[str], None]:
+    """Print each Tailscale sign-in link and open it in the configured browser."""
+    from .board import OpenError, open_in_browser
+
+    def announce(url: str) -> None:
+        click.echo(f"Approve this device in Tailscale: {url}")
+        try:
+            open_in_browser(serve, url)
+        except OpenError as error:
+            click.echo(f"  (could not open it: {error})")
+
+    return announce
+
+
 @cli.command("serve")
 @scope_options
 @serve_options
 def serve_command(
-    watch: tuple[str, ...], watch_all: bool, port: int | None, bind: str | None
+    watch: tuple[str, ...], watch_all: bool, port: int | None, bind: str | None,
+    hostname: str | None,
 ) -> None:
     """Serve the PR dashboard and an HTTP MCP endpoint, both protected by a token."""
     from .board import Board
     from .server import Dashboard, ServeError
 
     config = _load(watch, watch_all)
-    board = Board(config)
+    serve = _serve_settings(config, port, bind, hostname)
+    if serve.bind == "tailscale-node":
+        click.echo(f"Joining the tailnet as `{serve.hostname}`…")
     try:
-        dashboard = Dashboard(config, board, serve=_serve_settings(config, port, bind))
+        dashboard = Dashboard(config, Board(config), serve=serve, on_login=_announce_login(serve))
     except ServeError as error:
         raise click.ClickException(str(error)) from None
     click.echo(f"Dashboard: {dashboard.url}")
     click.echo(f"MCP:       {dashboard.mcp_url} (Authorization: Bearer <token>)")
+    if dashboard.node is not None:
+        click.echo(f"Only devices owned by {dashboard.node.owner} can connect.")
     click.echo("Open the dashboard once with the URL from `reviewbot token`. Ctrl+C stops.")
     try:
         dashboard.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        dashboard.http.server_close()
+        dashboard.stop()
 
 
 @cli.command("mcp")
@@ -574,12 +615,16 @@ def mcp_command(watch: tuple[str, ...], watch_all: bool) -> None:
 @cli.command("token")
 @serve_options
 @click.option("--rotate", is_flag=True, help="Replace the token; existing clients must update.")
-def token_command(port: int | None, bind: str | None, rotate: bool) -> None:
+def token_command(
+    port: int | None, bind: str | None, hostname: str | None, rotate: bool,
+) -> None:
     """Print the serve token with the dashboard login URL and MCP client setup.
 
-    Pass the same `--port`/`--bind` given to `reviewbot serve` so the URLs match it.
+    Pass the same `--port`/`--bind`/`--hostname` given to `reviewbot serve` so the URLs
+    match it.
     """
     from .server import ServeError, load_token, resolve_listen, token_path
+    from .tailnet import known_dns
 
     config = _load()
     token = load_token(config, rotate=rotate)
@@ -587,18 +632,79 @@ def token_command(port: int | None, bind: str | None, rotate: bool) -> None:
     if config.serve is None:
         click.echo(f"Add a `[serve]` table to {config.path} to serve the dashboard.")
         return
-    serve = _serve_settings(config, port, bind)
-    try:
-        listen = resolve_listen(serve.bind)
-    except ServeError as error:
-        raise click.ClickException(str(error)) from None
-    url = f"http://{listen.display}:{serve.port}/"
+    serve = _serve_settings(config, port, bind, hostname)
+    if serve.bind == "tailscale-node":
+        dns = known_dns(config, serve.hostname or "")
+        if dns is None:
+            raise click.ClickException(
+                f"`{serve.hostname}` has not joined the tailnet yet; run `reviewbot tailnet login`"
+            )
+        url = f"https://{dns}/"
+    else:
+        try:
+            listen = resolve_listen(serve.bind)
+        except ServeError as error:
+            raise click.ClickException(str(error)) from None
+        url = f"http://{listen.display}:{serve.port}/"
     click.echo(f"Dashboard login: {url}?token={token}")
     click.echo(
         f"Claude Code:     claude mcp add --transport http reviewbot {url}mcp "
         f'--header "Authorization: Bearer {token}"'
     )
     click.echo("Local stdio:     claude mcp add reviewbot -- reviewbot mcp")
+
+
+@cli.group("tailnet")
+def tailnet_group() -> None:
+    """Manage ReviewBot's own tailnet device (bind = "tailscale-node", macOS)."""
+
+
+def _node(hostname: str | None, announce: bool = True):
+    from .tailnet import Node, TailnetError
+
+    config = _load()
+    serve = _serve_settings(config, None, "tailscale-node", hostname)
+    try:
+        return config, serve, Node(
+            config, serve.hostname or "",
+            on_login=_announce_login(serve) if announce else (lambda url: None),
+        )
+    except TailnetError as error:
+        raise click.ClickException(str(error)) from None
+
+
+@tailnet_group.command("login")
+@click.option("--hostname", default=None, help="Override `[serve]` hostname.")
+def tailnet_login(hostname: str | None) -> None:
+    """Join the tailnet, printing a sign-in link if the device is not approved yet."""
+    from .tailnet import TailnetError
+
+    _, serve, node = _node(hostname)
+    click.echo(f"Joining the tailnet as `{serve.hostname}`…")
+    try:
+        dns, owner = node.login()
+    except TailnetError as error:
+        raise click.ClickException(str(error)) from None
+    click.secho(f"Signed in: https://{dns}/ (owner {owner})", fg="green")
+
+
+@tailnet_group.command("logout")
+@click.option("--hostname", default=None, help="Override `[serve]` hostname.")
+def tailnet_logout(hostname: str | None) -> None:
+    """Sign the device out of the tailnet and delete its local state."""
+    from .tailnet import TailnetError
+
+    _, serve, node = _node(hostname, announce=False)
+    try:
+        node.logout()
+    except TailnetError as error:
+        raise click.ClickException(
+            f"{error}; remove `{serve.hostname}` in the Tailscale admin console if it remains"
+        ) from None
+    click.echo(
+        f"Signed `{serve.hostname}` out and removed its state. Tailscale keeps the device "
+        "listed as expired; remove it at https://login.tailscale.com/admin/machines"
+    )
 
 
 if __name__ == "__main__":

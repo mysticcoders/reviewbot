@@ -154,6 +154,7 @@ class ReviewQueueApp(App[None]):
         self.board = Board(config)
         self._dashboard: Dashboard | None = None
         self._serve_on_mount = serve
+        self._starting_serve = False
         for launcher in config.launchers:
             if launcher.key:
                 self.bind(launcher.key, f"launch({launcher.name!r})", description=launcher.name)
@@ -192,39 +193,61 @@ class ReviewQueueApp(App[None]):
         self.run_worker(self._refresh_mine(quiet=True), exclusive=False)
         self.set_interval(TAB_POLL_SECONDS, self._sync_active)
         if self._serve_on_mount:
-            self._start_serve(open_browser=False)
+            self.run_worker(self._start_serve(open_browser=False))
 
     def on_unmount(self) -> None:
         if self._dashboard is not None:
             self._dashboard.stop()
             self._dashboard = None
 
-    def _start_serve(self, *, open_browser: bool) -> None:
-        """Start the dashboard and HTTP MCP endpoint on a background thread."""
+    def _announce_login(self, url: str) -> None:
+        """Show a Tailscale sign-in link and open it; called from the joining thread."""
+
+        def show() -> None:
+            self._status_line.update(f"Approve ReviewBot's tailnet device: {url}")
+            try:
+                open_in_browser(self.config.serve, url)
+            except OpenError:
+                pass
+
+        self.call_from_thread(show)
+
+    async def _start_serve(self, *, open_browser: bool) -> None:
+        """Start the dashboard and HTTP MCP endpoint, joining the tailnet first if configured."""
         if self.config.serve is None:
             self._status_line.update(
                 f"[red]Serve:[/red] add a `[serve]` table (port, bind, browser) to {self.config.path}"
             )
             return
+        if self._starting_serve:
+            return
+        self._starting_serve = True
+        if self.config.serve.bind == "tailscale-node":
+            self._status_line.update(f"Joining the tailnet as `{self.config.serve.hostname}`…")
         try:
-            self._dashboard = Dashboard(self.config, self.board)
+            dashboard = await asyncio.to_thread(
+                Dashboard, self.config, self.board, on_login=self._announce_login,
+            )
         except ServeError as error:
             self._status_line.update(f"[red]Serve failed:[/red] {error}")
             return
-        self._dashboard.start()
-        self.sub_title = f"{self.config.scope.describe()} · serving {self._dashboard.url}"
+        finally:
+            self._starting_serve = False
+        self._dashboard = dashboard
+        dashboard.start()
+        self.sub_title = f"{self.config.scope.describe()} · serving {dashboard.url}"
         self._status_line.update(
-            f"Serving {self._dashboard.url} and MCP at {self._dashboard.mcp_url} · ctrl+w stops"
+            f"Serving {dashboard.url} and MCP at {dashboard.mcp_url} · ctrl+w stops"
         )
         if open_browser:
             try:
-                open_in_browser(self.config.serve, self._dashboard.login_url)
+                open_in_browser(self.config.serve, dashboard.login_url)
             except OpenError as error:
                 self._status_line.update(f"[red]Could not open the dashboard:[/red] {error}")
 
-    def action_toggle_serve(self) -> None:
+    async def action_toggle_serve(self) -> None:
         if self._dashboard is None:
-            self._start_serve(open_browser=True)
+            self.run_worker(self._start_serve(open_browser=True))
             return
         dashboard, self._dashboard = self._dashboard, None
         self.sub_title = self.config.scope.describe()

@@ -14,7 +14,8 @@ RESERVED_KEYS = frozenset("qro12ae")
 NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,15}")
 KEY_PATTERN = re.compile(r"[A-Za-z0-9]")
 MULTIPLEXERS = {"herdr": "Herdr", "rex": "Rex"}
-BINDS = ("localhost", "tailnet")
+BINDS = ("localhost", "tailnet", "tailscale-node")
+NODE_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
 class ConfigError(Exception):
@@ -148,14 +149,16 @@ class Output:
 class Serve:
     """The local dashboard and MCP endpoint: where it listens and which browser opens PRs.
 
-    `bind` is "localhost" (this machine only) or "tailnet" (this machine's Tailscale
-    address only). `browser` is a macOS application name for `open -a`, or on other
+    `bind` is "localhost" (this machine only), "tailnet" (this machine's Tailscale
+    address only), or "tailscale-node" (ReviewBot's own tailnet device, named `hostname`,
+    macOS only). `browser` is a macOS application name for `open -a`, or on other
     platforms a command that is run with the URL as its argument.
     """
 
     port: int
     bind: str
     browser: str
+    hostname: str | None = None
 
 
 @dataclass(frozen=True)
@@ -403,7 +406,24 @@ def _serve(raw: dict) -> Serve | None:
     browser = table["browser"]
     if not isinstance(browser, str) or not browser.strip():
         raise ConfigError("`[serve]` `browser` must name the browser that opens PRs.")
-    return Serve(port=port, bind=bind, browser=browser.strip())
+    return Serve(port=port, bind=bind, browser=browser.strip(), hostname=_node_name(table, bind))
+
+
+def _node_name(table: dict, bind: str) -> str | None:
+    """The tailnet device name, required with `tailscale-node` and meaningless otherwise."""
+    hostname = table.get("hostname")
+    if bind != "tailscale-node":
+        if hostname is not None:
+            raise ConfigError('`[serve]` `hostname` only applies with bind = "tailscale-node".')
+        return None
+    if hostname is None:
+        raise ConfigError('`[serve]` bind = "tailscale-node" needs `hostname`, the tailnet device name.')
+    if not isinstance(hostname, str) or not NODE_NAME.fullmatch(hostname):
+        raise ConfigError(
+            "`[serve]` `hostname` must be 1-63 lowercase letters, digits, or '-', "
+            "not starting or ending with '-'."
+        )
+    return hostname
 
 
 def load(path: Path | None = None) -> Config:

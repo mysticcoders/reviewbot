@@ -15,12 +15,13 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 
 from .board import Board
 from .config import Config, Serve
 from .mcp import McpServer, handle_payload
+from .tailnet import Node, TailnetError
 
 COOKIE = "reviewbot_token"
 TAILSCALE_APP = Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
@@ -69,9 +70,16 @@ class Listen:
     display: str
 
 
+LOOPBACK = Listen("127.0.0.1", ("127.0.0.1", "localhost"), "127.0.0.1")
+
+
 def resolve_listen(bind: str) -> Listen:
-    """Turn `localhost` or `tailnet` into a concrete address; never a wildcard."""
-    if bind == "localhost":
+    """Turn a bind into a concrete address; never a wildcard.
+
+    With `tailscale-node` the server itself stays on loopback; the helper carries the
+    tailnet side.
+    """
+    if bind in ("localhost", "tailscale-node"):
         return Listen("127.0.0.1", ("127.0.0.1", "localhost"), "127.0.0.1")
     if bind != "tailnet":
         raise ServeError(f"unknown bind `{bind}`")
@@ -184,9 +192,10 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._token_ok(offered):
                 self._send(HTTPStatus.UNAUTHORIZED, _DENIED, "text/html; charset=utf-8")
                 return
+            secure = "; Secure" if self.server.secure else ""
             self._send(HTTPStatus.SEE_OTHER, headers={
                 "Location": "/",
-                "Set-Cookie": f"{COOKIE}={offered}; HttpOnly; SameSite=Strict; Path=/",
+                "Set-Cookie": f"{COOKIE}={offered}; HttpOnly; SameSite=Strict; Path=/{secure}",
             })
             return
         if not self._token_ok(self._cookie()):
@@ -241,10 +250,17 @@ class _HttpServer(ThreadingHTTPServer):
         self.board = board
         self.token = token
         self.mcp = McpServer(board)
+        self.secure = False
         port = self.server_address[1]
         self.allowed_hosts = frozenset(
             f"{host.lower()}:{port}" for host in hosts
         ) | ({host.lower() for host in hosts} if port == 80 else frozenset())
+
+    def allow_https_host(self, host: str) -> None:
+        """Accept a name served over HTTPS on 443 by a proxy in front of this server."""
+        host = host.lower()
+        self.allowed_hosts = self.allowed_hosts | {host, f"{host}:443"}
+        self.secure = True
 
 
 class Dashboard:
@@ -252,8 +268,14 @@ class Dashboard:
 
     def __init__(
         self, config: Config, board: Board, *, serve: Serve | None = None,
-        listen: Listen | None = None,
+        listen: Listen | None = None, on_login: Callable[[str], None] | None = None,
+        node: Node | None = None,
     ) -> None:
+        """Bind the server and, for `tailscale-node`, bring the tailnet device up.
+
+        Joining the tailnet can wait on the owner approving a sign-in link, which is passed
+        to `on_login`, so construct this off any UI thread.
+        """
         serve = serve or config.serve
         if serve is None:
             raise ServeError(
@@ -271,6 +293,24 @@ class Dashboard:
                 f"could not listen on {self.listen.address}:{serve.port}: {error}"
             ) from None
         self._thread: threading.Thread | None = None
+        self.node: Node | None = None
+        self.dns: str | None = None
+        if serve.bind == "tailscale-node":
+            self._start_node(config, serve, on_login, node)
+
+    def _start_node(
+        self, config: Config, serve: Serve, on_login: Callable[[str], None] | None,
+        node: Node | None,
+    ) -> None:
+        try:
+            self.node = node or Node(
+                config, serve.hostname or "", on_login=on_login or (lambda url: None),
+            )
+            self.dns = self.node.start(self.port)
+        except TailnetError as error:
+            self.http.server_close()
+            raise ServeError(str(error)) from None
+        self.http.allow_https_host(self.dns)
 
     @property
     def port(self) -> int:
@@ -278,6 +318,8 @@ class Dashboard:
 
     @property
     def url(self) -> str:
+        if self.dns:
+            return f"https://{self.dns}/"
         return f"http://{self.listen.display}:{self.port}/"
 
     @property
@@ -297,10 +339,12 @@ class Dashboard:
         self.http.serve_forever()
 
     def stop(self) -> None:
-        self.http.shutdown()
-        self.http.server_close()
+        if self.node is not None:
+            self.node.stop()
         if self._thread is not None:
+            self.http.shutdown()
             self._thread.join(timeout=5)
+        self.http.server_close()
 
 
 _DENIED = (

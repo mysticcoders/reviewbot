@@ -110,6 +110,7 @@ def test_ctrl_w_serves_the_board_the_tui_already_fetched(monkeypatch, tmp_path):
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("ctrl+w")
+            await app.workers.wait_for_complete()
             dashboard = app._dashboard
             assert dashboard is not None
             assert opened == [dashboard.login_url]

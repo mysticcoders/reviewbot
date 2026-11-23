@@ -78,6 +78,35 @@ section h2 {
   align-items: baseline;
 }
 section h2 .count { color: var(--muted); font-weight: normal; }
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 16px;
+  border-bottom: 1px solid var(--line);
+}
+.tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  padding: 10px 14px;
+  min-height: 44px;
+  font-weight: 600;
+}
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tab .count {
+  font-weight: normal;
+  font-size: 12px;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--chip);
+}
+.tab .count:empty { display: none; }
+[role="tabpanel"][hidden] { display: none; }
 .error { color: var(--bad); padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .empty { color: var(--muted); padding: 14px; }
 ul { list-style: none; margin: 0; padding: 0; }
@@ -124,17 +153,22 @@ button.mark { font-size: 12px; padding: 1px 8px; white-space: nowrap; }
   <button id="refresh" type="button">Refresh from GitHub</button>
 </header>
 <main>
-  <section>
-    <h2>Unread notifications <span class="count" id="notes-count"></span></h2>
-    <div id="notes"></div>
-  </section>
-  <section>
-    <h2>Waiting on my review <span class="count" id="queue-count"></span></h2>
+  <div class="tabs" role="tablist" aria-label="Views">
+    <button class="tab" type="button" role="tab" id="tab-queue" title="Review requests (1)" aria-keyshortcuts="1" aria-controls="panel-queue" aria-selected="true">Review requests<span class="count" id="queue-count"></span></button>
+    <button class="tab" type="button" role="tab" id="tab-mine" title="My PRs (2)" aria-keyshortcuts="2" aria-controls="panel-mine" aria-selected="false" tabindex="-1">My PRs<span class="count" id="mine-count"></span></button>
+    <button class="tab" type="button" role="tab" id="tab-notes" title="Notifications (3)" aria-keyshortcuts="3" aria-controls="panel-notes" aria-selected="false" tabindex="-1">Notifications<span class="count" id="notes-count"></span></button>
+  </div>
+  <section role="tabpanel" id="panel-queue" aria-labelledby="tab-queue">
+    <h2>Waiting on my review</h2>
     <div id="queue"></div>
   </section>
-  <section>
-    <h2>My open PRs <span class="count" id="mine-count"></span></h2>
+  <section role="tabpanel" id="panel-mine" aria-labelledby="tab-mine" hidden>
+    <h2>My open PRs</h2>
     <div id="mine"></div>
+  </section>
+  <section role="tabpanel" id="panel-notes" aria-labelledby="tab-notes" hidden>
+    <h2>Unread notifications</h2>
+    <div id="notes"></div>
   </section>
 </main>
 <script>
@@ -277,6 +311,42 @@ async function load(refresh) {
     button.disabled = false;
   }
 }
+
+const TABS = ["queue", "mine", "notes"];
+
+function showTab(name, focus) {
+  if (!TABS.includes(name)) name = "queue";
+  for (const tab of TABS) {
+    const button = document.getElementById(`tab-${tab}`);
+    const selected = tab === name;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    document.getElementById(`panel-${tab}`).hidden = !selected;
+    if (selected && focus) button.focus();
+  }
+  if (location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
+}
+
+for (const [index, tab] of TABS.entries()) {
+  const button = document.getElementById(`tab-${tab}`);
+  button.addEventListener("click", () => showTab(tab, false));
+  button.addEventListener("keydown", event => {
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    showTab(TABS[(index + step + TABS.length) % TABS.length], true);
+  });
+}
+
+document.addEventListener("keydown", event => {
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  if (event.target.closest("input, textarea, select, [contenteditable]")) return;
+  const tab = { "1": "queue", "2": "mine", "3": "notes" }[event.key];
+  if (tab) showTab(tab, true);
+});
+
+window.addEventListener("hashchange", () => showTab(location.hash.slice(1), false));
+showTab(location.hash.slice(1), false);
 
 document.getElementById("refresh").addEventListener("click", () => load(true));
 load(false);

@@ -5,7 +5,7 @@ ReviewBot can serve the two queues and your unread notifications in two ways:
 - as a web page, where each PR is a link that opens in a browser that is signed in to GitHub;
 - as an MCP server, so an agent can list your queue and notifications, open a PR in that browser for you, and mark notifications read.
 
-On the web page, opening a notification or pressing **Mark read** marks it read on GitHub.
+The web page has the same three tabs as the TUI: **Review requests**, **My PRs** and **Notifications**, each with a count. Press `1`, `2` or `3` to switch, or link straight to one with `#queue`, `#mine` or `#notes` at the end of the address. On the **Notifications** tab, opening a notification or pressing **Mark read** marks it read on GitHub.
 
 For how access is limited, read [The security model of `serve`](../explanation/security-model.md).
 

@@ -21,8 +21,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from .board import Board, OpenError
 from .config import Config, Serve
-from .github import GhError
 from .mcp import McpServer, handle_payload
+from .models import ForgeError
 from .tailnet import Node, TailnetError
 
 COOKIE = "reviewbot_token"
@@ -265,7 +265,7 @@ class _Handler(BaseHTTPRequestHandler):
         except OpenError as error:
             self._json(HTTPStatus.NOT_FOUND, {"error": str(error)})
             return
-        except GhError as error:
+        except ForgeError as error:
             self._json(HTTPStatus.BAD_GATEWAY, {"error": str(error)})
             return
         self._json(HTTPStatus.OK, {"marked_read": item.id, "key": item.key})

@@ -8,7 +8,7 @@ Start the TUI with `reviewbot tui`.
 | arrows | Select a PR. |
 | `r` | Refresh the current tab. |
 | `q` | Quit. |
-| `o` | Open the selected PR on GitHub. On **Notifications**, open the PR or issue and mark the notification read. |
+| `o` | Open the selected PR in the browser: through `gh` when it is installed, otherwise in the default browser. On **Notifications**, open the PR or issue and mark the notification read. |
 | your agent keys | Launch that agent, group or combat on the selected review request. The footer shows the keys. |
 | `a` | (My PRs) Pick reviewers: earlier reviewers, GitHub's suggestions, or a typed `login` or `org/team`. `ctrl+s` sends the request; `escape` cancels. |
 | `e` | (My PRs) Request review again from each reviewer whose review is stale or requested changes. |

@@ -17,10 +17,11 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from . import __version__
+from . import __version__, github
 from . import config as cfg
-from .github import GhError, ReviewCandidate, authored_prs, review_queue
+from .github import authored_prs, review_queue
 from .launch import LaunchError
+from .models import ForgeError, ReviewCandidate
 from .multiplexer import active_review_keys
 from .run import collects, execute, launch_review, list_runs
 
@@ -67,7 +68,7 @@ def scope_options(command):
 def _queue(config: cfg.Config) -> list[ReviewCandidate]:
     try:
         return asyncio.run(review_queue(config.scope))
-    except (GhError, OSError) as error:
+    except (ForgeError, OSError) as error:
         raise click.ClickException(f"GitHub query failed: {error}") from None
 
 
@@ -306,13 +307,7 @@ def doctor() -> None:
         path = shutil.which(tool)
         required.append(_check(tool, bool(path), path or "not on PATH"))
     if shutil.which("gh"):
-        auth = subprocess.run(
-            ["gh", "auth", "status"], capture_output=True, text=True, check=False
-        )
-        required.append(_check(
-            "gh auth", auth.returncode == 0,
-            "authenticated" if auth.returncode == 0 else "run `gh auth login`",
-        ))
+        required.append(_check("gh auth", *github.auth_status()))
     try:
         config = cfg.load()
     except cfg.ConfigError as error:
@@ -434,7 +429,7 @@ def mine_command(watch: tuple[str, ...], watch_all: bool) -> None:
     config = _load(watch, watch_all)
     try:
         prs = asyncio.run(authored_prs(config.scope))
-    except (GhError, OSError) as error:
+    except (ForgeError, OSError) as error:
         raise click.ClickException(f"GitHub query failed: {error}") from None
     table = Table(title=f"Your open PRs in {config.scope.describe()}")
     for heading in ("Status", "PR", "Checks", "Reviewers", "Title"):
@@ -485,10 +480,11 @@ def next_command(
 @click.option("--agent", required=True, help="Agent or group name from the config.")
 def launch_command(target: str, agent: str) -> None:
     """Launch a requested PR, identified as OWNER/REPO#NUMBER or its URL."""
-    normalized = target.removeprefix("https://github.com/").replace("/pull/", "#").rstrip("/")
-    repo, _, number = normalized.partition("#")
-    if repo.count("/") != 1 or not number.isdigit():
+    parsed = github.parse_target(target)
+    if parsed is None:
         raise click.ClickException(f"{target} is not OWNER/REPO#NUMBER or a PR URL")
+    repo, number = parsed
+    normalized = f"{repo}#{number}"
     config = _load((repo,))
     _require_agent(config, agent)
     candidate = next((item for item in _queue(config) if item.key == normalized), None)

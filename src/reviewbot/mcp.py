@@ -9,7 +9,7 @@ from typing import Any, TextIO
 
 from . import __version__
 from .board import Board, OpenError, open_in_browser
-from .github import GhError
+from .models import ForgeError
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
@@ -185,7 +185,7 @@ class McpServer:
                 return _result(request_id, _tool_error("`id` is required"))
             try:
                 item = self.board.mark_read(thread_id.strip())
-            except (OpenError, GhError) as error:
+            except (OpenError, ForgeError) as error:
                 return _result(request_id, _tool_error(str(error)))
             return _result(request_id, _tool_result({"marked_read": item.id, "key": item.key}))
         if name == "open_pr":

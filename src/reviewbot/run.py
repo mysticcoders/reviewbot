@@ -12,8 +12,8 @@ from pathlib import Path
 
 from . import config as cfg
 from .config import Config, ConfigError
-from .github import QueueStatus, ReviewCandidate
 from .launch import LaunchError, LaunchResult, prepare_checkout, render_prompt
+from .models import QueueStatus, ReviewCandidate
 from .multiplexer import open_session, prompt_and_wait, send_prompt
 
 ROLE_TITLES = {

@@ -7,8 +7,8 @@ from types import ModuleType
 
 from . import herdr, rex
 from .config import Agent, Config
-from .github import ReviewCandidate
 from .launch import LaunchResult
+from .models import ReviewCandidate
 
 BACKENDS: dict[str, ModuleType] = {"herdr": herdr, "rex": rex}
 

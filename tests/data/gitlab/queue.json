@@ -1,0 +1,23 @@
+{
+  "user": {"username": "dana"},
+  "merge_requests?scope=all&state=opened&reviewer_username=dana&per_page=100": [
+    {"iid": 7, "project_id": 11, "references": {"full": "camp/sub/tool!7"}, "updated_at": "2026-11-05T09:00:00Z"},
+    {"iid": 3, "project_id": 12, "references": {"full": "other/thing!3"}, "updated_at": "2026-11-06T09:00:00Z"}
+  ],
+  "projects/camp%2Fsub%2Ftool/merge_requests/7": {
+    "iid": 7, "title": "Add the parser", "author": {"username": "noa"},
+    "web_url": "https://gitlab.example.org/camp/sub/tool/-/merge_requests/7",
+    "updated_at": "2026-11-05T09:00:00Z", "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source_branch": "parser", "target_branch": "develop", "draft": false,
+    "head_pipeline": {"status": "success"}
+  },
+  "projects/camp%2Fsub%2Ftool/merge_requests/7/notes?sort=desc&per_page=100": [
+    {"system": true, "author": {"username": "noa"}, "body": "added 1 commit", "created_at": "2026-11-03T10:00:00Z"},
+    {"system": true, "author": {"username": "dana"}, "body": "approved this merge request", "created_at": "2026-11-02T10:00:00Z"},
+    {"system": false, "author": {"username": "dana"}, "body": "approved this merge request", "created_at": "2026-11-02T11:00:00Z"}
+  ],
+  "projects/camp%2Fsub%2Ftool/merge_requests/7/versions": [
+    {"created_at": "2026-11-03T10:00:00Z", "head_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    {"created_at": "2026-11-01T10:00:00Z", "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  ]
+}

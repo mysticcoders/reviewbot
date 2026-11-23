@@ -1,0 +1,10 @@
+[
+  {"text": "gitlab.example.org/camp/tool!7", "expected": ["gitlab.example.org/camp/tool", 7]},
+  {"text": "gitlab.example.org/camp/sub/tool!7", "expected": ["gitlab.example.org/camp/sub/tool", 7]},
+  {"text": "https://gitlab.example.org/camp/sub/tool/-/merge_requests/7", "expected": ["gitlab.example.org/camp/sub/tool", 7]},
+  {"text": "https://gitlab.example.org/camp/sub/tool/-/merge_requests/7/diffs", "expected": null},
+  {"text": " gitlab.example.org/camp/tool!7 ", "expected": ["gitlab.example.org/camp/tool", 7]},
+  {"text": "gitlab.example.org/tool!7", "expected": null},
+  {"text": "acme/api#12", "expected": null},
+  {"text": "gitlab.example.org/camp/tool!seven", "expected": null}
+]

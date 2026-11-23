@@ -14,7 +14,7 @@ test *args:
 
 # Check the code with ruff.
 lint:
-    uvx ruff check src tests
+    uv run ruff check src tests
 
 # Run the linter, then the unit tests.
 check: lint test

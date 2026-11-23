@@ -37,7 +37,6 @@ from ..multiplexer import active_review_keys
 from ..run import collects, launch_review
 from ..server import Dashboard, ServeError
 
-
 TAB_POLL_SECONDS = 3
 
 

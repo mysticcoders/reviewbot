@@ -146,6 +146,11 @@ def test_token_url_sets_a_strict_cookie_for_the_page(dashboard):
     assert request(dashboard, "GET", "/api/prs", headers=sent)[0].status == 200
 
 
+def test_malformed_cookie_is_refused(dashboard):
+    sent = {"Cookie": f"a@b=c; {COOKIE}={dashboard.token}"}
+    assert request(dashboard, "GET", "/", headers=sent)[0].status == 401
+
+
 def test_rebound_hosts_and_foreign_origins_are_refused(dashboard):
     auth = {"Authorization": f"Bearer {dashboard.token}"}
     assert request(dashboard, "GET", "/api/prs", headers=auth, host="evil.example")[0].status == 421

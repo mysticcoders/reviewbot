@@ -14,6 +14,7 @@ RESERVED_KEYS = frozenset("qro123ae")
 NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,15}")
 KEY_PATTERN = re.compile(r"[A-Za-z0-9]")
 MULTIPLEXERS = {"herdr": "Herdr", "rex": "Rex"}
+FORGE_KINDS = ("gitlab",)
 BINDS = ("localhost", "tailnet", "tailscale-node")
 NODE_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
@@ -24,55 +25,96 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class Scope:
-    """Which repositories to watch: whole owners, specific repos, or everything (both empty)."""
+    """Which repositories to watch.
+
+    `owners` and `repos` are GitHub entries. `hosted` holds entries on other forges, each
+    written with its host first: `host`, `host/group`, `host/group/project`.
+    `everything` means all of GitHub. With no entries at all, GitHub is watched entirely.
+    """
 
     owners: tuple[str, ...] = ()
     repos: tuple[str, ...] = ()
+    hosted: tuple[str, ...] = ()
+    everything: bool = False
 
     @classmethod
     def parse(cls, entries: list[str] | tuple[str, ...]) -> Scope:
-        """Split entries into owners (`acme`) and repos (`acme/api`); `*` or `all` means everything."""
+        """Split entries into GitHub owners and repos and hosted entries; `*` or `all` is all of GitHub.
+
+        An entry whose first part contains a dot names a host, because GitHub owner names
+        cannot contain dots.
+        """
         owners: list[str] = []
         repos: list[str] = []
+        hosted: list[str] = []
+        everything = False
         for raw in entries:
-            entry = str(raw).strip().removeprefix("https://github.com/").strip("/")
+            entry = str(raw).strip().removeprefix("https://github.com/").removeprefix("https://")
+            entry = entry.strip("/")
             if not entry:
                 continue
             if entry in {"*", "all"}:
-                return cls()
+                everything = True
+                continue
             parts = entry.split("/")
-            if len(parts) == 1:
+            if "." in parts[0] and all(parts):
+                target = hosted
+                entry = "/".join([parts[0].lower(), *parts[1:]])
+            elif len(parts) == 1:
                 target = owners
             elif len(parts) == 2 and all(parts):
                 target = repos
             else:
-                raise ConfigError(f"watch entry `{raw}` must be OWNER, OWNER/REPO, or `*`")
+                raise ConfigError(
+                    f"watch entry `{raw}` must be OWNER, OWNER/REPO, HOST/PATH, or `*`"
+                )
             if entry.lower() not in {item.lower() for item in target}:
                 target.append(entry)
-        return cls(owners=tuple(owners), repos=tuple(repos))
+        if everything:
+            owners, repos = [], []
+        return cls(
+            owners=tuple(owners), repos=tuple(repos), hosted=tuple(hosted), everything=everything,
+        )
 
     @property
     def is_all(self) -> bool:
-        return not self.owners and not self.repos
+        """Whether all of GitHub is watched."""
+        return self.everything or not (self.owners or self.repos or self.hosted)
+
+    @property
+    def watches_github(self) -> bool:
+        return self.is_all or bool(self.owners or self.repos)
+
+    @property
+    def hosts(self) -> tuple[str, ...]:
+        """The hosts named by hosted entries, in order of first appearance."""
+        return tuple(dict.fromkeys(entry.split("/", 1)[0] for entry in self.hosted))
 
     @property
     def single_owner(self) -> str | None:
         """The one owner every watched repo belongs to, when there is exactly one."""
+        if self.hosted:
+            return None
         found = {owner.lower() for owner in self.owners}
         found |= {repo.split("/", 1)[0].lower() for repo in self.repos}
         return found.pop() if len(found) == 1 else None
 
     def label(self, repo: str) -> str:
-        """Short repo name when everything watched belongs to one owner, else OWNER/REPO."""
+        """Short repo name when everything watched belongs to one owner, else the full name."""
         owner, _, name = repo.partition("/")
         single = self.single_owner
         return name if single and owner.lower() == single else repo
 
     def contains(self, repo: str) -> bool:
-        """Whether OWNER/REPO is watched, ignoring case."""
+        """Whether a repository (OWNER/REPO, or HOST/PATH) is watched, ignoring case."""
+        wanted = repo.lower()
+        if "." in wanted.split("/", 1)[0]:
+            return any(
+                wanted == item.lower() or wanted.startswith(item.lower() + "/")
+                for item in self.hosted
+            )
         if self.is_all:
             return True
-        wanted = repo.lower()
         owner = wanted.split("/", 1)[0]
         return (
             any(owner == item.lower() for item in self.owners)
@@ -81,8 +123,10 @@ class Scope:
 
     def describe(self) -> str:
         if self.is_all:
-            return "all repositories"
-        return ", ".join([*self.owners, *self.repos])
+            if not self.hosted:
+                return "all repositories"
+            return ", ".join(["all GitHub repositories", *self.hosted])
+        return ", ".join([*self.owners, *self.repos, *self.hosted])
 
 
 @dataclass(frozen=True)
@@ -186,6 +230,7 @@ class Config:
     output: Output | None = None
     serve: Serve | None = None
     path: Path = field(default=CONFIG_PATH)
+    forges: dict[str, str] = field(default_factory=dict)
 
     @property
     def multiplexer_name(self) -> str:
@@ -248,6 +293,31 @@ def _scope(raw: dict) -> Scope:
     if not isinstance(watch, list):
         raise ConfigError("`watch` must be a list of OWNER or OWNER/REPO entries.")
     return Scope.parse(watch)
+
+
+def _forges(raw: dict, scope: Scope) -> dict[str, str]:
+    """Read `[[forges]]`, mapping each non-GitHub host to its kind; every watched host needs one."""
+    forges: dict[str, str] = {}
+    for item in raw.get("forges", []):
+        host = str(item.get("host") or "").strip().lower()
+        kind = item.get("kind")
+        if not host:
+            raise ConfigError("each `[[forges]]` entry needs `host`.")
+        if host == "github.com":
+            raise ConfigError("github.com needs no `[[forges]]` entry: bare watch entries are GitHub.")
+        if kind not in FORGE_KINDS:
+            raise ConfigError(
+                f"`[[forges]]` `{host}` kind must be one of: {', '.join(FORGE_KINDS)}."
+            )
+        if host in forges:
+            raise ConfigError(f"`[[forges]]` names `{host}` more than once.")
+        forges[host] = kind
+    for host in scope.hosts:
+        if host not in forges:
+            raise ConfigError(
+                f"watch entries on `{host}` need a forge: there is no `[[forges]]` entry for `{host}`."
+            )
+    return forges
 
 
 def _checkouts(raw: dict, base: Path) -> tuple[Checkout, ...]:
@@ -448,6 +518,7 @@ def load(path: Path | None = None) -> Config:
         raise ConfigError(f"{path}: {error}") from None
     base = path.parent
     scope = _scope(raw)
+    forges = _forges(raw, scope)
     multiplexer = _multiplexer(raw)
     agents, groups, combats = _agents(raw, base, multiplexer)
     return Config(
@@ -463,6 +534,7 @@ def load(path: Path | None = None) -> Config:
         output=_output(raw, base),
         serve=_serve(raw),
         path=path,
+        forges=forges,
     )
 
 

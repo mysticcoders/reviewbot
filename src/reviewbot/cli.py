@@ -17,9 +17,10 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from . import __version__, github
+from . import __version__, github, gitlab
 from . import config as cfg
-from .github import authored_prs, review_queue
+from .forge import review_queue
+from .github import authored_prs
 from .launch import LaunchError
 from .models import ForgeError, ReviewCandidate
 from .multiplexer import active_review_keys
@@ -67,9 +68,9 @@ def scope_options(command):
 
 def _queue(config: cfg.Config) -> list[ReviewCandidate]:
     try:
-        return asyncio.run(review_queue(config.scope))
+        return asyncio.run(review_queue(config))
     except (ForgeError, OSError) as error:
-        raise click.ClickException(f"GitHub query failed: {error}") from None
+        raise click.ClickException(f"Queue query failed: {error}") from None
 
 
 def _print_candidate(candidate: ReviewCandidate) -> None:
@@ -317,6 +318,11 @@ def doctor() -> None:
         "config", True, f"{config.path} · watching {config.scope.describe()}",
     ))
     required.append(_multiplexer_check(config))
+    for host in config.forges:
+        glab = shutil.which("glab")
+        required.append(_check("glab", bool(glab), glab or f"not on PATH; needed for {host}"))
+        if glab:
+            required.append(_check(f"glab auth {host}", *gitlab.auth_status(host)))
     if not config.agents:
         required.append(_check("agents", False, "no [[agents]] configured"))
     for agent in config.agents:
@@ -479,15 +485,20 @@ def next_command(
 @click.argument("target")
 @click.option("--agent", required=True, help="Agent or group name from the config.")
 def launch_command(target: str, agent: str) -> None:
-    """Launch a requested PR, identified as OWNER/REPO#NUMBER or its URL."""
-    parsed = github.parse_target(target)
+    """Launch a requested PR or MR: OWNER/REPO#NUMBER, HOST/PATH!NUMBER, or its URL."""
+    parsed = github.parse_target(target) or gitlab.parse_target(target)
     if parsed is None:
-        raise click.ClickException(f"{target} is not OWNER/REPO#NUMBER or a PR URL")
+        raise click.ClickException(
+            f"{target} is not OWNER/REPO#NUMBER, HOST/PATH!NUMBER, or a PR or MR URL"
+        )
     repo, number = parsed
-    normalized = f"{repo}#{number}"
     config = _load((repo,))
     _require_agent(config, agent)
-    candidate = next((item for item in _queue(config) if item.key == normalized), None)
+    candidate = next(
+        (item for item in _queue(config)
+         if item.repo.lower() == repo.lower() and item.number == number),
+        None,
+    )
     if candidate is None:
         raise click.ClickException(f"{target} is not in your current review-request queue")
     _print_candidate(candidate)

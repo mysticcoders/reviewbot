@@ -43,10 +43,17 @@ class ReviewCandidate:
     commits_since_review: int
     checks: str
     status: QueueStatus
+    forge: str = "github"
+
+    @property
+    def mark(self) -> str:
+        """The sign before the number: `#` for a GitHub PR, `!` for a GitLab MR."""
+        return "!" if self.forge == "gitlab" else "#"
 
     @property
     def key(self) -> str:
-        return f"{self.repo}#{self.number}"
+        """`owner/repo#12` on GitHub; `host/group/project!12` on GitLab, where `repo` holds the host."""
+        return f"{self.repo}{self.mark}{self.number}"
 
     @property
     def actionable(self) -> bool:

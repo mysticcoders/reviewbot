@@ -111,4 +111,4 @@ def tab_label(candidate: ReviewCandidate, agent: str) -> str:
 
 def review_marker(candidate: ReviewCandidate) -> str:
     """The tab-label prefix shared by every agent's tab for this PR, at any commit."""
-    return f"{candidate.repo} #{candidate.number} "
+    return f"{candidate.repo} {candidate.mark}{candidate.number} "

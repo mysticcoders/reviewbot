@@ -27,12 +27,12 @@ from textual.widgets import (
 from .. import forge
 from ..board import Board, OpenError, open_in_browser
 from ..config import Config
+from ..forge import review_queue
 from ..github import (
     authored_prs,
     mark_notification_read,
     notifications,
     request_reviewers,
-    review_queue,
 )
 from ..launch import LaunchError
 from ..models import AuthoredPR, ForgeError, Notification, ReviewCandidate
@@ -410,7 +410,7 @@ class ReviewQueueApp(App[None]):
             return
         self._status_line.update(f"Fetching review requests in {self.config.scope.describe()}…")
         try:
-            candidates = await review_queue(self.config.scope)
+            candidates = await review_queue(self.config)
             active = await asyncio.to_thread(active_review_keys, self.config, candidates)
         except (ForgeError, LaunchError, OSError) as error:
             self._status_line.update(f"[red]Refresh failed:[/red] {error}")

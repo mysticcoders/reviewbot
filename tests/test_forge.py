@@ -55,3 +55,12 @@ def test_github_clone_uses_gh(monkeypatch, tmp_path):
     monkeypatch.setattr(github, "run_command", lambda *args, **kwargs: seen.append(args))
     github.clone("acme/api", tmp_path / "api")
     assert seen == [("gh", "repo", "clone", "acme/api", str(tmp_path / "api"))]
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_github_web_command_needs_gh(monkeypatch, installed):
+    from reviewbot import github
+
+    monkeypatch.setattr(github.shutil, "which", lambda name: f"/bin/{name}" if installed else None)
+    expected = ["gh", "pr", "view", "12", "--repo", "acme/api", "--web"] if installed else None
+    assert github.web_command("pr", "acme/api", 12) == expected

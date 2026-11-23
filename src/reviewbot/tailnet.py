@@ -15,6 +15,7 @@ from typing import IO
 from .config import Config
 
 HELPER = "reviewbot-tsnet"
+LOG_LIMIT = 5 * 1024 * 1024
 INSTALL_HINT = (
     'install it with: uv tool install --force "reviewbot[tailnet] @ '
     'git+https://github.com/mysticcoders/reviewbot"'
@@ -63,16 +64,18 @@ def _remember(config: Config, hostname: str, dns: str, owner: str) -> None:
 class Node:
     """One reviewbot-tsnet process, from launch through sign-in to shutdown.
 
-    `on_login` receives each sign-in URL while the node waits for its owner to approve it.
+    `on_login` receives each sign-in URL while the node waits for its owner to approve it;
+    `on_status` receives progress messages, such as a certificate retry.
     """
 
     def __init__(
         self, config: Config, hostname: str, *, on_login: Callable[[str], None],
-        helper: Path | None = None,
+        on_status: Callable[[str], None] | None = None, helper: Path | None = None,
     ) -> None:
         self.config = config
         self.hostname = hostname
         self.on_login = on_login
+        self.on_status = on_status or (lambda message: None)
         self.helper = helper or helper_path()
         self.dns: str | None = None
         self.owner: str | None = None
@@ -83,9 +86,13 @@ class Node:
         state = state_dir(self.config, self.hostname)
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         state.chmod(0o700)
-        self._log = (state / "helper.log").open("a", encoding="utf-8")
+        log = state / "helper.log"
+        if log.exists() and log.stat().st_size > LOG_LIMIT:
+            log.replace(state / "helper.log.1")
+        self._log = log.open("a", encoding="utf-8")
         return subprocess.Popen(
-            [str(self.helper), command, "--hostname", self.hostname, "--state", str(state), *extra],
+            [str(self.helper), command, "--hostname", self.hostname, "--state", str(state),
+             *extra],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._log, text=True, bufsize=1,
         )
 
@@ -100,6 +107,8 @@ class Node:
             kind = event.get("event")
             if kind == "login":
                 self.on_login(event.get("url", ""))
+            elif kind == "status":
+                self.on_status(event.get("message", ""))
             elif kind == "error":
                 self._close(process)
                 raise TailnetError(event.get("message") or "reviewbot-tsnet failed")

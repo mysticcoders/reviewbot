@@ -86,7 +86,8 @@ func main() {
 		cancel()
 	}()
 
-	srv := &tsnet.Server{Hostname: *hostname, Dir: *state, UserLogf: func(string, ...any) {}}
+	log.SetOutput(os.Stderr)
+	srv := &tsnet.Server{Hostname: *hostname, Dir: *state, UserLogf: log.Printf}
 	if *verbose {
 		srv.Logf = log.New(os.Stderr, "tsnet: ", log.LstdFlags).Printf
 	} else {
@@ -170,12 +171,7 @@ func run(ctx context.Context, srv *tsnet.Server, target string) {
 	if err != nil {
 		fail("listening on the tailnet: %v", err)
 	}
-	certCtx, certDone := context.WithTimeout(ctx, 2*time.Minute)
-	_, _, err = lc.CertPair(certCtx, strings.TrimSuffix(status.Self.DNSName, "."))
-	certDone()
-	if err != nil {
-		fail("fetching the HTTPS certificate: %v", err)
-	}
+	fetchCert(ctx, lc, strings.TrimSuffix(status.Self.DNSName, "."))
 	upstream := &url.URL{Scheme: "http", Host: target}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
@@ -197,6 +193,41 @@ func run(ctx context.Context, srv *tsnet.Server, target string) {
 	shutdown, done := context.WithTimeout(context.Background(), 5*time.Second)
 	defer done()
 	_ = server.Shutdown(shutdown)
+}
+
+// certRetries are the waits before each further certificate attempt. Let's Encrypt allows
+// five failed validations per hostname per hour, so one run stays under that; restarting
+// serve within the hour can still use up the rest.
+var certRetries = []time.Duration{20 * time.Second, time.Minute, 2 * time.Minute}
+
+// fetchCert gets the device's HTTPS certificate before serving, so the first client does
+// not time out while it is issued. A new device's DNS record can take a while to reach
+// Let's Encrypt, so failed orders are retried, reporting each wait.
+func fetchCert(ctx context.Context, lc *local.Client, domain string) {
+	for attempt := 0; ; attempt++ {
+		certCtx, done := context.WithTimeout(ctx, 2*time.Minute)
+		_, _, err := lc.CertPair(certCtx, domain)
+		done()
+		if err == nil {
+			return
+		}
+		if ctx.Err() != nil {
+			os.Exit(0)
+		}
+		log.Printf("certificate attempt %d for %s failed: %v", attempt+1, domain, err)
+		if attempt == len(certRetries) {
+			fail("fetching the HTTPS certificate for %s after %d attempts: %v (details in helper.log)",
+				domain, attempt+1, err)
+		}
+		wait := certRetries[attempt]
+		emit(event{Event: "status", Message: fmt.Sprintf(
+			"HTTPS certificate for %s not issued yet; retrying in %s", domain, wait)})
+		select {
+		case <-ctx.Done():
+			os.Exit(0)
+		case <-time.After(wait):
+		}
+	}
 }
 
 // ownerOnly admits requests from untagged devices that belong to the node's owner.

@@ -43,6 +43,7 @@ def fake_helper(tmp_path: Path, script: str) -> Path:
 
 SIGNS_IN = (
     "emit(event='login', url='https://login.tailscale.com/a/abc')\n"
+    "emit(event='status', message='certificate not issued yet; retrying in 20s')\n"
     f"emit(event='ready', dns='{DNS}', owner='andrew@example.com')\n"
     "if sys.argv[1] == 'run':\n"
     "    sys.stdin.read()\n"
@@ -75,10 +76,12 @@ def test_tailscale_node_requires_a_valid_hostname(tmp_path):
 
 def test_node_reports_sign_in_links_and_remembers_its_name(tmp_path):
     config = write(tmp_path)
-    links = []
-    node = Node(config, "reviewbot-test", on_login=links.append, helper=signs_in(tmp_path))
+    links, statuses = [], []
+    node = Node(config, "reviewbot-test", on_login=links.append, on_status=statuses.append,
+                helper=signs_in(tmp_path))
     assert node.start(4321) == DNS
     assert links == ["https://login.tailscale.com/a/abc"]
+    assert statuses == ["certificate not issued yet; retrying in 20s"]
     assert node.owner == "andrew@example.com"
     assert known_dns(config, "reviewbot-test") == DNS
     state = state_dir(config, "reviewbot-test")
@@ -158,3 +161,16 @@ def test_hostname_override_is_validated(tmp_path, monkeypatch):
     assert "needs a device name" in result.output
     result = run_cli(tmp_path, monkeypatch, "token", "--bind", "tailscale-node", "--hostname", "Bad_")
     assert "not a valid device name" in result.output
+
+
+def test_helper_log_is_rotated_past_the_limit(tmp_path, monkeypatch):
+    from reviewbot import tailnet
+
+    config = write(tmp_path)
+    monkeypatch.setattr(tailnet, "LOG_LIMIT", 10)
+    state = state_dir(config, "reviewbot-test")
+    state.mkdir(parents=True)
+    (state / "helper.log").write_text("x" * 20)
+    Node(config, "reviewbot-test", on_login=print, helper=signs_in(tmp_path)).login()
+    assert (state / "helper.log.1").read_text() == "x" * 20
+    assert (state / "helper.log").stat().st_size == 0

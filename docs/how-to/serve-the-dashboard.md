@@ -134,6 +134,8 @@ Before you start, turn on MagicDNS and HTTPS certificates for your tailnet.
 
 If the device is not approved yet, `reviewbot serve` and `ctrl+w` in the TUI also show the sign-in link.
 
+The first start of a new device can wait for its HTTPS certificate, because its DNS name takes time to reach Let's Encrypt. The helper tries four times, waiting 20 seconds, then 1 minute, then 2 minutes between attempts, and `reviewbot serve` or the TUI status line shows each wait. If every attempt fails, `serve` stops with the error, and `helper.log` has the details. Let's Encrypt allows five failed attempts per device name per hour, so wait before you start `serve` again.
+
 `serve`, `token`, `tailnet login` and `tailnet logout` accept `--hostname` to override `hostname` for one run.
 
 ### Remove the device
@@ -147,7 +149,7 @@ This signs the device out, and deletes its local state. Tailscale still lists th
 ### Files
 
 - The device state is in `~/.config/reviewbot/tsnet/<hostname>/`. Only the owner can read it.
-- The helper writes its log to `helper.log` in that directory.
+- The helper writes its log to `helper.log` in that directory. When the log is larger than 5 MB at startup, ReviewBot renames it to `helper.log.1`, which replaces any earlier one.
 
 ### Build the helper yourself
 

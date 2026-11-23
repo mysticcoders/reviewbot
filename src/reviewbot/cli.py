@@ -586,7 +586,10 @@ def serve_command(
     if serve.bind == "tailscale-node":
         click.echo(f"Joining the tailnet as `{serve.hostname}`…")
     try:
-        dashboard = Dashboard(config, Board(config), serve=serve, on_login=_announce_login(serve))
+        dashboard = Dashboard(
+            config, Board(config), serve=serve, on_login=_announce_login(serve),
+            on_status=click.echo,
+        )
     except ServeError as error:
         raise click.ClickException(str(error)) from None
     click.echo(f"Dashboard: {dashboard.url}")

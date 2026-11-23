@@ -211,6 +211,9 @@ class ReviewQueueApp(App[None]):
 
         self.call_from_thread(show)
 
+    def _announce_status(self, message: str) -> None:
+        self.call_from_thread(self._status_line.update, message)
+
     async def _start_serve(self, *, open_browser: bool) -> None:
         """Start the dashboard and HTTP MCP endpoint, joining the tailnet first if configured."""
         if self.config.serve is None:
@@ -226,6 +229,7 @@ class ReviewQueueApp(App[None]):
         try:
             dashboard = await asyncio.to_thread(
                 Dashboard, self.config, self.board, on_login=self._announce_login,
+                on_status=self._announce_status,
             )
         except ServeError as error:
             self._status_line.update(f"[red]Serve failed:[/red] {error}")

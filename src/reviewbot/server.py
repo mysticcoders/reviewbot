@@ -270,7 +270,7 @@ class Dashboard:
     def __init__(
         self, config: Config, board: Board, *, serve: Serve | None = None,
         listen: Listen | None = None, on_login: Callable[[str], None] | None = None,
-        node: Node | None = None,
+        on_status: Callable[[str], None] | None = None, node: Node | None = None,
     ) -> None:
         """Bind the server and, for `tailscale-node`, bring the tailnet device up.
 
@@ -297,15 +297,16 @@ class Dashboard:
         self.node: Node | None = None
         self.dns: str | None = None
         if serve.bind == "tailscale-node":
-            self._start_node(config, serve, on_login, node)
+            self._start_node(config, serve, on_login, on_status, node)
 
     def _start_node(
         self, config: Config, serve: Serve, on_login: Callable[[str], None] | None,
-        node: Node | None,
+        on_status: Callable[[str], None] | None, node: Node | None,
     ) -> None:
         try:
             self.node = node or Node(
                 config, serve.hostname or "", on_login=on_login or (lambda url: None),
+                on_status=on_status,
             )
             self.dns = self.node.start(self.port)
         except TailnetError as error:

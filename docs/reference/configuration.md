@@ -25,7 +25,7 @@ dir = "~/reviewbot-reviews"
 
 [serve]                             # optional
 port = 8765
-bind = "localhost"                  # "localhost" or "tailnet"
+bind = "localhost"                  # "localhost", "tailnet" or "tailscale-node"
 browser = "Google Chrome"           # opens PRs for the MCP open_pr tool
 
 [[checkouts]]                       # optional; reuse an existing local clone
@@ -96,13 +96,14 @@ Each `[[combats]]` table defines one combat. See [Run a combat review](../how-to
 
 ## `[serve]`
 
-All fields are required. See [Serve the dashboard and MCP endpoint](../how-to/serve-the-dashboard.md).
+See [Serve the dashboard and MCP endpoint](../how-to/serve-the-dashboard.md).
 
-| Field | Value |
-| --- | --- |
-| `port` | The TCP port. |
-| `bind` | `"localhost"` or `"tailnet"`. |
-| `browser` | On macOS, an app name for `open -a`. On Linux, a command that ReviewBot runs with the URL. |
+| Field | Required | Value |
+| --- | --- | --- |
+| `port` | yes | The TCP port, 0–65535. With `tailscale-node`, the loopback port behind the device; 0 picks a free port. |
+| `bind` | yes | `"localhost"`, `"tailnet"` or `"tailscale-node"` (macOS only). |
+| `browser` | yes | On macOS, an app name for `open -a`. On Linux, a command that ReviewBot runs with the URL. |
+| `hostname` | with `tailscale-node` | The device name on the tailnet: 1–63 lowercase letters, digits or `-`, not starting or ending with `-`. Not allowed with the other `bind` values. |
 
 ## Checkouts
 

@@ -18,6 +18,8 @@ Run `reviewbot --help`, or `reviewbot <command> --help`, for every option.
 | `reviewbot serve` | Serves the dashboard and the HTTP MCP endpoint. |
 | `reviewbot token` | Prints the token, the dashboard login URL and the MCP setup. |
 | `reviewbot mcp` | Runs the MCP server over stdio. |
+| `reviewbot tailnet login` | Joins the tailnet as ReviewBot's own device, and prints a sign-in link if the device is not approved yet. macOS only. |
+| `reviewbot tailnet logout` | Signs the device out of the tailnet, and deletes its local state. |
 
 ## Examples
 
@@ -35,7 +37,8 @@ reviewbot token --rotate                  # replace the token; clients must upda
 
 - `--agent` takes any agent, group or combat name from the config.
 - `--watch` (`-w`) and `--all` replace the configured `watch` list for one run. They work on each command that reads the queues: `tui`, `status`, `mine`, `next`, `serve`, `mcp`.
-- `serve` and `token` take `--bind` and `--port`, which replace those `[serve]` settings for one run.
+- `serve` and `token` take `--bind`, `--port` and `--hostname`, which replace those `[serve]` settings for one run. `--hostname` applies only with `tailscale-node`.
+- `tailnet login` and `tailnet logout` take `--hostname`.
 - `tui --serve` starts the dashboard with the TUI, and does not open the browser.
 
 `launch` looks the PR up in the review requests of that repository. So it works whatever the configured `watch` list is.

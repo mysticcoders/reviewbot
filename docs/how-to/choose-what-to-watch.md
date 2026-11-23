@@ -43,6 +43,8 @@ ReviewBot can also watch merge requests on GitLab servers, through the `glab` CL
 
 Entries without a host are GitHub entries. A watch list with only GitLab entries does not query GitHub.
 
+Prompt copies that `reviewbot init` installed before GitLab support say "GitHub pull request". To get the wording that names the forge, see [Prompts installed by an older version](write-prompts.md#prompts-installed-by-an-older-version).
+
 A GitLab MR appears as `host/group/project!12`. For how its status is decided, see [Queue statuses](../reference/statuses.md#gitlab-merge-requests).
 
 ## Override the list for one run

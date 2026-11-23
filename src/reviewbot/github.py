@@ -22,6 +22,8 @@ from .models import (
 )
 from .process import run_command
 
+NAME, CHANGE, CHANGE_ABBR = "GitHub", "pull request", "PR"
+
 
 class GhError(ForgeError):
     """A `gh` command failed, or GitHub returned data ReviewBot cannot read."""

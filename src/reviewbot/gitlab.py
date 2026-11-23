@@ -32,6 +32,9 @@ PASSING = {"success", "skipped"}
 FAILING = {"failed", "canceled"}
 
 
+NAME, CHANGE, CHANGE_ABBR = "GitLab", "merge request", "MR"
+
+
 class GlabError(ForgeError):
     """A `glab` command failed, or GitLab returned data ReviewBot cannot read."""
 

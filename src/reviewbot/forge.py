@@ -1,8 +1,9 @@
 """Pick the forge (GitHub or GitLab) that hosts a repository, and merge their queues.
 
 Each forge is a module with the same functions: `clone`, `head_ref`, `parse_target`,
-`auth_status`, `web_command` and `review_queue`. This mirrors how `multiplexer.py`
-routes to Herdr or Rex.
+`auth_status`, `web_command` and `review_queue`. Each also names itself for prompts:
+`NAME` (GitHub), `CHANGE` (pull request) and `CHANGE_ABBR` (PR). This mirrors how
+`multiplexer.py` routes to Herdr or Rex.
 
 A repository whose first part contains a dot (`host/group/project`) lives on the forge
 that `[[forges]]` names for that host. Any other repository (`owner/repo`) is on GitHub.

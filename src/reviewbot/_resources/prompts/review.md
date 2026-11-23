@@ -1,14 +1,14 @@
-Review GitHub pull request {key}: {title} (by @{author}).
+Review {forge} {change} {key}: {title} (by @{author}).
 
-You are in a detached worktree at the exact PR head {head_sha}. The base branch is
-{base_branch}. Inspect the PR diff and relevant repository code and tests. Focus
-the review on whether meaningful tests protect the behavior this PR adds or changes.
+You are in a detached worktree at the exact {change_abbr} head {head_sha}. The base branch is
+{base_branch}. Inspect the {change_abbr} diff and relevant repository code and tests. Focus
+the review on whether meaningful tests protect the behavior this {change_abbr} adds or changes.
 
 Before reviewing, verify HEAD is {head_sha}. Use the refreshed remote-tracking base
 origin/{base_branch}, never the potentially stale local {base_branch}. Resolve and record
 its SHA, the merge base with HEAD, and the changed-file list using the three-dot diff.
 If the base cannot be verified, state that limitation instead of assuming the scope.
-Keep pre-existing repository issues separate from PR findings unless this PR newly exposes
+Keep pre-existing repository issues separate from {change_abbr} findings unless this {change_abbr} newly exposes
 the behavior. Include the reviewed head/base SHAs in the result.
 
 Identify the intended behavior and realistic failure modes, then check existing tests
@@ -29,14 +29,14 @@ Distinguish demonstrated bugs from unverified risks and coverage gaps; a missing
 alone does not prove the implementation is wrong. Omit style nitpicks, personal code
 preferences, speculative refactors, and low-impact implementation critiques.
 
-GitHub status at launch:
+{forge} status at launch:
 - review requested via: {request_source}
 - review decision: {review_decision}
 - checks: {checks}
 - my previous review: {previous_review}
 - commits since my previous review: {commits_since_review}
 
-Do not edit the branch, push commits, submit a GitHub review, or post comments automatically.
+Do not edit the branch, push commits, submit a {forge} review, or post comments automatically.
 Present a concise review to me in this session so I can decide what to submit, leading
 with the highest-impact findings and concrete test recommendations. If coverage is
 adequate and there are no substantive issues, say so without inventing findings.

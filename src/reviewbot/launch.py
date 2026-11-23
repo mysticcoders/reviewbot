@@ -82,6 +82,7 @@ PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
 def prompt_fields(candidate: ReviewCandidate, agent: str) -> dict[str, str]:
     """Values available to prompt templates as `{name}` placeholders."""
+    host = forge.FORGES[candidate.forge]
     previous = "none"
     if candidate.last_review_state:
         previous = f"{candidate.last_review_state} at {(candidate.last_review_sha or '')[:7]}"
@@ -93,6 +94,7 @@ def prompt_fields(candidate: ReviewCandidate, agent: str) -> dict[str, str]:
         "review_decision": candidate.review_decision or "none", "checks": candidate.checks,
         "previous_review": previous,
         "commits_since_review": str(candidate.commits_since_review), "agent": agent,
+        "forge": host.NAME, "change": host.CHANGE, "change_abbr": host.CHANGE_ABBR,
     }
 
 

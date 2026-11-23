@@ -57,6 +57,15 @@ MINE_ACTIONS = {"request_review", "rerequest_stale"}
 UNREAD = " *"
 
 
+def escape(text: str) -> str:
+    """Make outside text (titles, errors, URLs) display as typed instead of as markup.
+
+    Textual reads any `[...]`, including `[WIP]` and `[$x]`, as a tag, and its own escape
+    misses those, so every opening bracket is escaped.
+    """
+    return text.replace("[", "\\[")
+
+
 def _ago(iso: str) -> str:
     """Render an ISO timestamp as a short age such as 5m, 3h, or 2d."""
     try:
@@ -114,14 +123,14 @@ class ReviewerPicker(ModalScreen[list[str] | None]):
             if reviewer.requested:
                 continue
             name = f"{self.pr.repo.split('/', 1)[0]}/{reviewer.name}" if reviewer.is_team else reviewer.name
-            options.append((f"{name}  ({reviewer.label})", name, reviewer.needs_rerequest))
+            options.append((f"{escape(name)}  ({reviewer.label})", name, reviewer.needs_rerequest))
         for login in self.pr.suggested:
-            options.append((f"{login}  (suggested)", login, False))
+            options.append((f"{escape(login)}  (suggested)", login, False))
         pending = [reviewer.name for reviewer in self.pr.reviewers if reviewer.requested]
         with Vertical(id="picker"):
-            yield Label(f"[bold]Request review[/bold] for {self.pr.key}")
+            yield Label(f"[bold]Request review[/bold] for {escape(self.pr.key)}")
             if pending:
-                yield Label(f"Already waiting on: {', '.join(pending)}", classes="hint")
+                yield Label(f"Already waiting on: {escape(', '.join(pending))}", classes="hint")
             if options:
                 yield SelectionList[str](*options, id="picker-options")
             else:
@@ -240,7 +249,7 @@ class ReviewQueueApp(App[None]):
         """Show a Tailscale sign-in link and open it; called from the joining thread."""
 
         def show() -> None:
-            self._status_line.update(f"Approve ReviewBot's tailnet device: {url}")
+            self._status_line.update(f"Approve ReviewBot's tailnet device: {escape(url)}")
             try:
                 open_in_browser(self.config.serve, url)
             except OpenError:
@@ -249,27 +258,30 @@ class ReviewQueueApp(App[None]):
         self.call_from_thread(show)
 
     def _announce_status(self, message: str) -> None:
-        self.call_from_thread(self._status_line.update, message)
+        self.call_from_thread(self._status_line.update, escape(message))
 
     async def _start_serve(self, *, open_browser: bool) -> None:
         """Start the dashboard and HTTP MCP endpoint, joining the tailnet first if configured."""
         if self.config.serve is None:
             self._status_line.update(
-                f"[red]Serve:[/red] add a `[serve]` table (port, bind, browser) to {self.config.path}"
+                f"[red]Serve:[/red] add a `\\[serve]` table (port, bind, browser) to "
+                f"{escape(str(self.config.path))}"
             )
             return
         if self._starting_serve:
             return
         self._starting_serve = True
         if self.config.serve.bind == "tailscale-node":
-            self._status_line.update(f"Joining the tailnet as `{self.config.serve.hostname}`…")
+            self._status_line.update(
+                f"Joining the tailnet as `{escape(self.config.serve.hostname or '')}`…"
+            )
         try:
             dashboard = await asyncio.to_thread(
                 Dashboard, self.config, self.board, on_login=self._announce_login,
                 on_status=self._announce_status,
             )
         except ServeError as error:
-            self._status_line.update(f"[red]Serve failed:[/red] {error}")
+            self._status_line.update(f"[red]Serve failed:[/red] {escape(str(error))}")
             return
         finally:
             self._starting_serve = False
@@ -283,7 +295,7 @@ class ReviewQueueApp(App[None]):
             try:
                 open_in_browser(self.config.serve, dashboard.login_url)
             except OpenError as error:
-                self._status_line.update(f"[red]Could not open the dashboard:[/red] {error}")
+                self._status_line.update(f"[red]Could not open the dashboard:[/red] {escape(str(error))}")
 
     async def action_toggle_serve(self) -> None:
         if self._dashboard is None:
@@ -341,7 +353,7 @@ class ReviewQueueApp(App[None]):
     def _unread_reasons(self, key: str) -> str:
         """The reasons of unread notifications about one PR, for the detail pane."""
         reasons = dict.fromkeys(note.reason_label for note in self._notes if note.key == key)
-        return f" · [bold]unread:[/bold] {', '.join(reasons)}" if reasons else ""
+        return f" · [bold]unread:[/bold] {escape(', '.join(reasons))}" if reasons else ""
 
     def _pr_cell(self, number: int, key: str) -> str:
         return f"{number}{UNREAD}" if any(note.key == key for note in self._notes) else str(number)
@@ -365,9 +377,10 @@ class ReviewQueueApp(App[None]):
                 f"{candidate.commits_since_review} newer commit(s)"
             )
         self._detail.update(
-            f"[bold]{candidate.key}[/bold] — {candidate.title}{self._unread_reasons(candidate.key)}\n"
-            f"{candidate.base_branch} ← {candidate.head_branch} ({candidate.head_sha[:7]})"
-            f"{previous}\n{candidate.url}"
+            f"[bold]{escape(candidate.key)}[/bold] — {escape(candidate.title)}"
+            f"{self._unread_reasons(candidate.key)}\n"
+            f"{escape(candidate.base_branch)} ← {escape(candidate.head_branch)} "
+            f"({candidate.head_sha[:7]}){previous}\n{escape(candidate.url)}"
         )
 
     def _show_selected_mine(self) -> None:
@@ -375,15 +388,15 @@ class ReviewQueueApp(App[None]):
         if pr is None:
             self._detail.update("No open PRs authored by you.")
             return
-        reviewers = ", ".join(f"{r.name} ({r.label})" for r in pr.reviewers) or "none"
-        suggested = f"\nSuggested: {', '.join(pr.suggested)}" if pr.suggested else ""
+        reviewers = ", ".join(f"{escape(r.name)} ({r.label})" for r in pr.reviewers) or "none"
+        suggested = f"\nSuggested: {escape(', '.join(pr.suggested))}" if pr.suggested else ""
         mergeable = pr.mergeable.lower() or "unknown"
         decision = pr.review_decision.lower().replace("_", " ") or "no decision"
         self._detail.update(
-            f"[bold]{pr.key}[/bold] — {pr.title}{self._unread_reasons(pr.key)}\n"
-            f"{pr.base_branch} ← {pr.head_branch} ({pr.head_sha[:7]}) · "
+            f"[bold]{escape(pr.key)}[/bold] — {escape(pr.title)}{self._unread_reasons(pr.key)}\n"
+            f"{escape(pr.base_branch)} ← {escape(pr.head_branch)} ({pr.head_sha[:7]}) · "
             f"{decision} · {mergeable} · checks {pr.checks}\n"
-            f"Reviewers: {reviewers}{suggested}\n{pr.url}"
+            f"Reviewers: {reviewers}{suggested}\n{escape(pr.url)}"
         )
 
     def _show_selected_note(self) -> None:
@@ -393,9 +406,9 @@ class ReviewQueueApp(App[None]):
             return
         kind = "pull request" if note.kind == "pr" else "issue"
         self._detail.update(
-            f"[bold]{note.key}[/bold] — {note.title}\n"
-            f"{kind} · {note.reason_label} · updated {_ago(note.updated_at)} ago\n"
-            f"{note.url}\no opens it and marks it read · m marks it read"
+            f"[bold]{escape(note.key)}[/bold] — {escape(note.title)}\n"
+            f"{kind} · {escape(note.reason_label)} · updated {_ago(note.updated_at)} ago\n"
+            f"{escape(note.url)}\no opens it and marks it read · m marks it read"
         )
 
     async def action_refresh(self) -> None:
@@ -414,7 +427,7 @@ class ReviewQueueApp(App[None]):
             candidates = await review_queue(self.config.scope)
             active = await asyncio.to_thread(active_review_keys, self.config, candidates)
         except (GhError, LaunchError, OSError) as error:
-            self._status_line.update(f"[red]Refresh failed:[/red] {error}")
+            self._status_line.update(f"[red]Refresh failed:[/red] {escape(str(error))}")
             return
         selected = self._selected()
         self._candidates = candidates
@@ -424,12 +437,12 @@ class ReviewQueueApp(App[None]):
         for candidate in candidates:
             self._table.add_row(
                 _display_status(candidate, active),
-                self.config.scope.label(candidate.repo),
+                escape(self.config.scope.label(candidate.repo)),
                 self._pr_cell(candidate.number, candidate.key),
                 candidate.checks,
                 candidate.request_source,
-                f"@{candidate.author}",
-                candidate.title,
+                escape(f"@{candidate.author}"),
+                escape(candidate.title),
             )
         keys = [candidate.key for candidate in candidates]
         if selected is not None and selected.key in keys:
@@ -474,7 +487,7 @@ class ReviewQueueApp(App[None]):
         try:
             authored = await authored_prs(self.config.scope)
         except (GhError, OSError) as error:
-            self._status_line.update(f"[red]My PRs refresh failed:[/red] {error}")
+            self._status_line.update(f"[red]My PRs refresh failed:[/red] {escape(str(error))}")
             return
         row = self._mine_table.cursor_row
         self._authored = authored
@@ -483,11 +496,11 @@ class ReviewQueueApp(App[None]):
         for pr in authored:
             self._mine_table.add_row(
                 pr.status.value,
-                self.config.scope.label(pr.repo),
+                escape(self.config.scope.label(pr.repo)),
                 self._pr_cell(pr.number, pr.key),
                 pr.checks,
-                pr.reviewer_summary,
-                pr.title,
+                escape(pr.reviewer_summary),
+                escape(pr.title),
             )
         if authored:
             self._mine_table.move_cursor(row=min(row, len(authored) - 1))
@@ -506,7 +519,7 @@ class ReviewQueueApp(App[None]):
             notes = await notifications(self.config.scope)
         except (GhError, OSError) as error:
             if not quiet or self._on_notes:
-                self._status_line.update(f"[red]Notifications refresh failed:[/red] {error}")
+                self._status_line.update(f"[red]Notifications refresh failed:[/red] {escape(str(error))}")
             return
         self._show_notes(notes)
         self.board.update_notifications(notes)
@@ -517,12 +530,12 @@ class ReviewQueueApp(App[None]):
         self._notes_table.clear()
         for note in notes:
             self._notes_table.add_row(
-                note.reason_label,
-                self.config.scope.label(note.repo),
+                escape(note.reason_label),
+                escape(self.config.scope.label(note.repo)),
                 str(note.number),
                 "PR" if note.kind == "pr" else "issue",
                 _ago(note.updated_at),
-                note.title,
+                escape(note.title),
             )
         ids = [note.id for note in notes]
         if selected is not None and selected.id in ids:
@@ -549,13 +562,13 @@ class ReviewQueueApp(App[None]):
         try:
             await mark_notification_read(note.id)
         except (GhError, OSError) as error:
-            self._status_line.update(f"[red]Mark read failed:[/red] {error}")
+            self._status_line.update(f"[red]Mark read failed:[/red] {escape(str(error))}")
             return False
         finally:
             self._marking = False
         self._show_notes([item for item in self._notes if item.id != note.id])
         self.board.update_notifications(self._notes)
-        self._status_line.update(f"Marked {note.key} read")
+        self._status_line.update(f"Marked {escape(note.key)} read")
         return True
 
     def _show_summary(self) -> None:
@@ -591,13 +604,13 @@ class ReviewQueueApp(App[None]):
             command = "pr" if note.kind == "pr" else "issue"
             self._open_web(command, note.number, note.repo)
             if await self._mark_read(note):
-                self._status_line.update(f"Opening {note.url} · marked read")
+                self._status_line.update(f"Opening {escape(note.url)} · marked read")
             return
         target = self._selected_mine() if self._on_mine else self._selected()
         if target is None:
             return
         self._open_web("pr", target.number, target.repo)
-        self._status_line.update(f"Opening {target.url}")
+        self._status_line.update(f"Opening {escape(target.url)}")
 
     def _open_web(self, command: str, number: int, repo: str) -> None:
         subprocess.Popen(
@@ -610,17 +623,17 @@ class ReviewQueueApp(App[None]):
         if not reviewers or self._requesting:
             return
         self._requesting = True
-        names = ", ".join(reviewers)
-        self._status_line.update(f"Requesting review from {names} on {pr.key}…")
+        names = escape(", ".join(reviewers))
+        self._status_line.update(f"Requesting review from {names} on {escape(pr.key)}…")
         try:
             await request_reviewers(pr.repo, pr.number, reviewers)
         except (GhError, OSError) as error:
-            self._status_line.update(f"[red]Request failed:[/red] {error}")
+            self._status_line.update(f"[red]Request failed:[/red] {escape(str(error))}")
             return
         finally:
             self._requesting = False
         await self._refresh_mine(quiet=True)
-        self._status_line.update(f"Requested review from {names} on {pr.key}")
+        self._status_line.update(f"Requested review from {names} on {escape(pr.key)}")
 
     def action_request_review(self) -> None:
         pr = self._selected_mine()
@@ -664,7 +677,7 @@ class ReviewQueueApp(App[None]):
                 launch_review, self.config, candidate, agent=agent
             )
         except LaunchError as error:
-            self._status_line.update(f"[red]Launch failed:[/red] {error}")
+            self._status_line.update(f"[red]Launch failed:[/red] {escape(str(error))}")
         else:
             self._active.add(candidate.key)
             self.board.update_active(self._active)

@@ -192,3 +192,55 @@ def test_notifications_tab_marks_rows_and_marks_read(monkeypatch, tmp_path):
             assert marked == ["11"]
 
     asyncio.run(scenario())
+
+
+def test_brackets_in_titles_and_errors_are_shown_as_typed(monkeypatch, tmp_path):
+    import asyncio
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from reviewbot.config import Serve
+    from reviewbot.server import ServeError
+    from reviewbot.tailnet import INSTALL_HINT
+    from reviewbot.tui import app as tui
+
+    wip = replace(_candidate(1), title="[WIP] Fix [red]login[/red]")
+
+    async def review_queue(scope):
+        return [wip]
+
+    async def authored_prs(scope):
+        return []
+
+    def no_helper(*args, **kwargs):
+        raise ServeError(f"reviewbot-tsnet is not installed; {INSTALL_HINT}")
+
+    monkeypatch.setattr(tui, "review_queue", review_queue)
+    monkeypatch.setattr(tui, "authored_prs", authored_prs)
+    monkeypatch.setattr(tui, "notifications", no_notifications)
+    monkeypatch.setattr(tui, "active_review_keys", lambda config, candidates: set())
+    monkeypatch.setattr(tui, "Dashboard", no_helper)
+    scope = SimpleNamespace(describe=lambda: "acme", label=lambda repo: repo)
+    config = SimpleNamespace(
+        scope=scope, launchers=[], agents=[], path=tmp_path / "config.toml",
+        multiplexer_name="rex", serve=Serve(port=0, bind="localhost", browser="Chrome"),
+    )
+
+    def plain(widget):
+        return str(widget.render())
+
+    async def scenario():
+        app = tui.ReviewQueueApp(config)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert "[WIP] Fix [red]login[/red]" in plain(app._detail)
+            title = app._table.get_row_at(0)[-1]
+            from textual.content import Content
+            assert Content.from_markup(title).plain == "[WIP] Fix [red]login[/red]"
+            await app._start_serve(open_browser=False)
+            assert '"reviewbot[tailnet] @ git+' in plain(app._status_line)
+            config.serve = None
+            await app._start_serve(open_browser=False)
+            assert "add a `[serve]` table" in plain(app._status_line)
+
+    asyncio.run(scenario())

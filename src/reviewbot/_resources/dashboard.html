@@ -109,6 +109,7 @@ li a.title:hover { text-decoration: underline; }
 .checks.failing { color: var(--bad); }
 .checks.passing { color: var(--ok); }
 .checks.pending { color: var(--warn); }
+button.mark { font-size: 12px; padding: 1px 8px; white-space: nowrap; }
 @media (max-width: 640px) {
   li { grid-template-columns: 1fr auto; }
   .detail { grid-column: 1 / 3; }
@@ -123,6 +124,10 @@ li a.title:hover { text-decoration: underline; }
   <button id="refresh" type="button">Refresh from GitHub</button>
 </header>
 <main>
+  <section>
+    <h2>Unread notifications <span class="count" id="notes-count"></span></h2>
+    <div id="notes"></div>
+  </section>
   <section>
     <h2>Waiting on my review <span class="count" id="queue-count"></span></h2>
     <div id="queue"></div>
@@ -165,6 +170,53 @@ function row(item, detail) {
     el("span", { class: `checks ${item.checks}` }, `checks ${item.checks}`),
     el("span", { class: "detail" }, detail),
   );
+}
+
+function noteRow(item) {
+  const mark = el("button", { class: "mark", type: "button" }, "Mark read");
+  mark.addEventListener("click", () => markRead(item.id, mark));
+  const link = el("a", { class: "title", href: item.url, target: "_blank", rel: "noopener noreferrer" }, item.title);
+  link.addEventListener("click", () => markRead(item.id, mark));
+  return el("li", {},
+    el("span", { class: "status warn" }, item.reason.replaceAll("_", " ")),
+    el("span", { class: "main-line" }, link, " ", el("span", { class: "key" }, item.key)),
+    mark,
+    el("span", { class: "detail" }, `${item.kind === "pr" ? "pull request" : "issue"} · updated ${ago(item.updated_at)}`),
+  );
+}
+
+function renderNotes(items, error) {
+  const box = document.getElementById("notes");
+  box.replaceChildren();
+  document.getElementById("notes-count").textContent = items.length ? `${items.length}` : "";
+  if (error) box.append(el("div", { class: "error" }, `GitHub query failed: ${error}`));
+  if (!items.length && !error) {
+    box.append(el("div", { class: "empty" }, "Nothing unread."));
+    return;
+  }
+  box.append(el("ul", {}, ...items.map(noteRow)));
+}
+
+async function markRead(id, button) {
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/notifications/read", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      document.getElementById("meta").textContent = `Could not mark read: ${data.error || response.status}`;
+      button.disabled = false;
+      return;
+    }
+    load(false);
+  } catch (error) {
+    document.getElementById("meta").textContent = `Could not reach ReviewBot: ${error}`;
+    button.disabled = false;
+  }
 }
 
 function ago(iso) {
@@ -213,9 +265,10 @@ async function load(refresh) {
       return;
     }
     const data = await response.json();
+    renderNotes(data.notifications, data.errors.notifications);
     render("queue", "queue-count", data.queue, data.errors.queue, queueDetail);
     render("mine", "mine-count", data.mine, data.errors.mine, mineDetail);
-    const fetched = Math.min(...[data.queue_at, data.mine_at].filter(Boolean));
+    const fetched = Math.min(...[data.queue_at, data.mine_at, data.notifications_at].filter(Boolean));
     const when = Number.isFinite(fetched) ? new Date(fetched * 1000).toLocaleTimeString() : "never";
     document.getElementById("meta").textContent = `${data.scope} · fetched ${when}`;
   } catch (error) {

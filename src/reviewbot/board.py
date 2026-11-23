@@ -1,4 +1,4 @@
-"""A shared, cached view of the review queue and the user's PRs for the dashboard and MCP."""
+"""A shared, cached view of the review queue, the user's PRs, and notifications for the dashboard and MCP."""
 
 from __future__ import annotations
 
@@ -11,7 +11,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Config, Serve
-from .github import AuthoredPR, GhError, ReviewCandidate, authored_prs, review_queue
+from .github import (
+    AuthoredPR,
+    GhError,
+    Notification,
+    ReviewCandidate,
+    authored_prs,
+    mark_notification_read,
+    notifications,
+    review_queue,
+)
 from .launch import LaunchError
 from .multiplexer import active_review_keys
 
@@ -67,20 +76,38 @@ def authored_json(pr: AuthoredPR) -> dict[str, Any]:
     }
 
 
+def notification_json(item: Notification) -> dict[str, Any]:
+    """Describe one unread notification about a PR or issue."""
+    return {
+        "id": item.id,
+        "key": item.key,
+        "repo": item.repo,
+        "number": item.number,
+        "kind": item.kind,
+        "title": item.title,
+        "reason": item.reason,
+        "updated_at": item.updated_at,
+        "url": item.url,
+    }
+
+
 @dataclass
 class Board:
-    """The latest queue and authored PRs, fetched on demand once older than STALE_SECONDS.
+    """The latest queue, authored PRs, and notifications, fetched once older than STALE_SECONDS.
 
-    The TUI pushes its own fetches in with `update_queue` and `update_mine` so serving from
-    the TUI does not query GitHub twice. Safe to use from several threads.
+    The TUI pushes its own fetches in with `update_queue`, `update_mine`, and
+    `update_notifications` so serving from the TUI does not query GitHub twice. Safe to use
+    from several threads.
     """
 
     config: Config
     candidates: list[ReviewCandidate] = field(default_factory=list)
     authored: list[AuthoredPR] = field(default_factory=list)
+    notes: list[Notification] = field(default_factory=list)
     active: set[str] = field(default_factory=set)
     queue_at: float = 0.0
     mine_at: float = 0.0
+    notes_at: float = 0.0
     errors: dict[str, str] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _fetch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -100,6 +127,23 @@ class Board:
             self.authored = list(authored)
             self.mine_at = time.time()
             self.errors.pop("mine", None)
+
+    def update_notifications(self, notes: list[Notification]) -> None:
+        with self._lock:
+            self.notes = list(notes)
+            self.notes_at = time.time()
+            self.errors.pop("notifications", None)
+
+    def mark_read(self, thread_id: str) -> Notification:
+        """Mark a notification on the board read on GitHub and drop it from the board."""
+        with self._lock:
+            found = next((item for item in self.notes if item.id == thread_id), None)
+        if found is None:
+            raise OpenError(f"{thread_id} is not an unread notification")
+        asyncio.run(mark_notification_read(thread_id))
+        with self._lock:
+            self.notes = [item for item in self.notes if item.id != thread_id]
+        return found
 
     def refresh(self, *, force: bool = False) -> None:
         """Fetch from GitHub whatever is stale (or everything when forced), recording failures."""
@@ -122,6 +166,14 @@ class Board:
                         self.errors["mine"] = str(error)
                 else:
                     self.update_mine(authored)
+            if force or now - self.notes_at > STALE_SECONDS:
+                try:
+                    notes = asyncio.run(notifications(self.config.scope))
+                except (GhError, OSError) as error:
+                    with self._lock:
+                        self.errors["notifications"] = str(error)
+                else:
+                    self.update_notifications(notes)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -129,23 +181,25 @@ class Board:
                 "scope": self.config.scope.describe(),
                 "queue": [candidate_json(c, self.active) for c in self.candidates],
                 "mine": [authored_json(pr) for pr in self.authored],
+                "notifications": [notification_json(item) for item in self.notes],
                 "queue_at": self.queue_at or None,
                 "mine_at": self.mine_at or None,
+                "notifications_at": self.notes_at or None,
                 "errors": dict(self.errors),
             }
 
     def find_url(self, target: str) -> str:
         """Resolve a PR key (owner/repo#n) or URL to a URL the board knows about.
 
-        Only PRs on the board can be opened, so a client cannot use `open_pr` to send the
-        browser to an arbitrary address.
+        Only PRs and notifications on the board can be opened, so a client cannot use
+        `open_pr` to send the browser to an arbitrary address.
         """
         wanted = target.strip().lower()
         with self._lock:
-            for item in [*self.candidates, *self.authored]:
+            for item in [*self.candidates, *self.authored, *self.notes]:
                 if wanted in (item.key.lower(), item.url.lower()):
                     return item.url
-        raise OpenError(f"{target} is not in the review queue or your open PRs")
+        raise OpenError(f"{target} is not in the review queue, your open PRs, or notifications")
 
 
 def open_in_browser(serve: Serve | None, url: str) -> None:

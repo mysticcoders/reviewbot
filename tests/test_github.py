@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -125,3 +126,39 @@ def test_run_does_not_retry_client_errors(monkeypatch):
     with pytest.raises(github.GhError, match="404"):
         asyncio.run(github._run("gh", "api", "repos/x/y"))
     assert len(calls) == 1
+
+
+def test_notifications_keep_watched_prs_and_issues(monkeypatch):
+    def thread(thread_id, repo, kind, url_tail, reason="comment"):
+        return json.dumps({
+            "id": thread_id, "reason": reason, "updated_at": f"2026-11-2{thread_id}T00:00:00Z",
+            "subject": {"type": kind, "title": f"T{thread_id}",
+                        "url": f"https://api.github.com/repos/{repo}/{url_tail}"},
+            "repository": {"full_name": repo, "html_url": f"https://github.com/{repo}"},
+        })
+
+    lines = "\n".join([
+        thread("1", "Acme/api", "PullRequest", "pulls/7", "review_requested"),
+        thread("2", "acme/web", "Issue", "issues/3"),
+        thread("3", "other/x", "PullRequest", "pulls/1"),
+        thread("4", "acme/api", "Release", "releases/9"),
+    ])
+
+    async def run(*args, **kwargs):
+        assert args[:4] == ("gh", "api", "--paginate", "notifications?per_page=50")
+        return lines
+
+    monkeypatch.setattr(github, "_run", run)
+    found = asyncio.run(github.notifications(Scope.parse(["acme"])))
+    assert [(n.key, n.kind, n.url) for n in found] == [
+        ("acme/web#3", "issue", "https://github.com/acme/web/issues/3"),
+        ("Acme/api#7", "pr", "https://github.com/Acme/api/pull/7"),
+    ]
+    assert found[1].reason_label == "review requested"
+    everything = asyncio.run(github.notifications(Scope()))
+    assert len(everything) == 3
+
+
+def test_mark_read_refuses_a_bad_thread_id():
+    with pytest.raises(github.GhError):
+        asyncio.run(github.mark_notification_read("../user"))

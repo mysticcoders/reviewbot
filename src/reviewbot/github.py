@@ -451,3 +451,63 @@ async def request_reviewers(repo: str, number: int, reviewers: list[str]) -> Non
         else:
             args += ["-f", f"reviewers[]={reviewer.removeprefix('@')}"]
     await _run(*args)
+
+
+NOTIFICATION_KINDS = {"PullRequest": "pr", "Issue": "issue"}
+
+
+@dataclass(frozen=True)
+class Notification:
+    """One unread GitHub notification thread about a pull request or issue."""
+
+    id: str
+    repo: str
+    kind: str
+    number: int
+    title: str
+    reason: str
+    updated_at: str
+    url: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.repo}#{self.number}"
+
+    @property
+    def reason_label(self) -> str:
+        return self.reason.replace("_", " ")
+
+
+def _notification(thread: dict[str, Any]) -> Notification | None:
+    """Build a Notification from a REST thread, or None for kinds ReviewBot does not show."""
+    subject = thread.get("subject") or {}
+    kind = NOTIFICATION_KINDS.get(subject.get("type", ""))
+    repository = thread.get("repository") or {}
+    number = (subject.get("url") or "").rstrip("/").rsplit("/", 1)[-1]
+    if kind is None or not number.isdigit() or not repository.get("full_name"):
+        return None
+    path = "pull" if kind == "pr" else "issues"
+    return Notification(
+        id=str(thread["id"]), repo=repository["full_name"], kind=kind, number=int(number),
+        title=subject.get("title") or "", reason=thread.get("reason") or "",
+        updated_at=thread.get("updated_at") or "",
+        url=f"{repository.get('html_url') or 'https://github.com/' + repository['full_name']}"
+            f"/{path}/{number}",
+    )
+
+
+async def notifications(scope: Scope) -> list[Notification]:
+    """Unread notifications about pull requests and issues in watched repositories, newest first."""
+    raw = await _run(
+        "gh", "api", "--paginate", "notifications?per_page=50", "--jq", ".[]",
+    )
+    threads = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    found = [item for item in map(_notification, threads) if item and scope.contains(item.repo)]
+    return sorted(found, key=lambda item: item.updated_at, reverse=True)
+
+
+async def mark_notification_read(thread_id: str) -> None:
+    """Mark one notification thread read on GitHub."""
+    if not thread_id.isdigit():
+        raise GhError(f"not a notification thread ID: {thread_id}")
+    await _run("gh", "api", "-X", "PATCH", f"notifications/threads/{thread_id}", "--silent")

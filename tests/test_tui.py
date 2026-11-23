@@ -15,6 +15,10 @@ def test_display_status_uses_live_herdr_state():
 
 
 
+async def no_notifications(scope):
+    return []
+
+
 def _candidate(number):
     return ReviewCandidate(
         repo="acme/demo", number=number, title="Fix", author="author",
@@ -44,6 +48,7 @@ def test_closed_review_tab_frees_the_row_and_refetches(monkeypatch, tmp_path):
 
     monkeypatch.setattr(tui, "review_queue", review_queue)
     monkeypatch.setattr(tui, "authored_prs", authored_prs)
+    monkeypatch.setattr(tui, "notifications", no_notifications)
     monkeypatch.setattr(tui, "active_review_keys", lambda config, candidates: set(tabs))
     scope = SimpleNamespace(describe=lambda: "acme", label=lambda repo: repo)
     config = SimpleNamespace(
@@ -90,6 +95,7 @@ def test_ctrl_w_serves_the_board_the_tui_already_fetched(monkeypatch, tmp_path):
     opened = []
     monkeypatch.setattr(tui, "review_queue", review_queue)
     monkeypatch.setattr(tui, "authored_prs", authored_prs)
+    monkeypatch.setattr(tui, "notifications", no_notifications)
     monkeypatch.setattr(tui, "active_review_keys", lambda config, candidates: set())
     monkeypatch.setattr(tui, "open_in_browser", lambda serve, url: opened.append(url))
     scope = SimpleNamespace(describe=lambda: "acme", label=lambda repo: repo)
@@ -119,5 +125,70 @@ def test_ctrl_w_serves_the_board_the_tui_already_fetched(monkeypatch, tmp_path):
             await pilot.press("ctrl+w")
             await pilot.pause()
             assert app._dashboard is None
+
+    asyncio.run(scenario())
+
+
+def test_notifications_tab_marks_rows_and_marks_read(monkeypatch, tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+
+    from reviewbot.github import Notification
+    from reviewbot.tui import app as tui
+
+    first = _candidate(1)
+    notes = [
+        Notification(id="11", repo="acme/demo", kind="pr", number=1, title="Fix",
+                     reason="review_requested", updated_at="2026-11-22T00:00:00Z",
+                     url="https://github.com/acme/demo/pull/1"),
+        Notification(id="12", repo="acme/demo", kind="issue", number=5, title="Bug",
+                     reason="mention", updated_at="2026-11-21T00:00:00Z",
+                     url="https://github.com/acme/demo/issues/5"),
+    ]
+    marked = []
+
+    async def review_queue(scope):
+        return [first]
+
+    async def authored_prs(scope):
+        return []
+
+    async def fetch_notes(scope):
+        return list(notes)
+
+    async def mark(thread_id):
+        marked.append(thread_id)
+
+    monkeypatch.setattr(tui, "review_queue", review_queue)
+    monkeypatch.setattr(tui, "authored_prs", authored_prs)
+    monkeypatch.setattr(tui, "notifications", fetch_notes)
+    monkeypatch.setattr(tui, "mark_notification_read", mark)
+    monkeypatch.setattr(tui, "active_review_keys", lambda config, candidates: set())
+    scope = SimpleNamespace(describe=lambda: "acme", label=lambda repo: repo)
+    config = SimpleNamespace(
+        scope=scope, launchers=[], agents=[], path=tmp_path, multiplexer_name="rex",
+    )
+
+    async def scenario():
+        app = tui.ReviewQueueApp(config)
+        async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app._table.get_cell_at((0, 2)) == "1 *"
+            await pilot.press("3")
+            await pilot.pause()
+            assert app._notes_table.row_count == 2
+            assert app._notes_table.get_cell_at((0, 0)) == "review requested"
+            assert str(app.query_one("#tabs").get_tab(tui.NOTES_TAB).label) == "Notifications (2) [3]"
+            await pilot.press("m")
+            await pilot.pause()
+            assert marked == ["11"]
+            assert [n.id for n in app._notes] == ["12"]
+            assert [n.id for n in app.board.notes] == ["12"]
+            assert app._table.get_cell_at((0, 2)) == "1"
+            await pilot.press("1")
+            await pilot.press("m")
+            await pilot.pause()
+            assert marked == ["11"]
 
     asyncio.run(scenario())

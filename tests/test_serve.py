@@ -13,6 +13,7 @@ from reviewbot.config import ConfigError, load
 from reviewbot.github import (
     AuthoredPR,
     AuthoredStatus,
+    Notification,
     QueueStatus,
     ReviewCandidate,
     ReviewerStatus,
@@ -50,11 +51,35 @@ def authored():
     )
 
 
+def note(thread_id="101", number=12, kind="pr"):
+    path = "pull" if kind == "pr" else "issues"
+    return Notification(
+        id=thread_id, repo="acme/demo", kind=kind, number=number, title=f"Note {number}",
+        reason="comment", updated_at="2026-11-22T00:00:00Z",
+        url=f"https://github.com/acme/demo/{path}/{number}",
+    )
+
+
 def board(config):
     item = Board(config)
     item.update_queue([candidate(12), candidate(13)], {"acme/demo#13"})
     item.update_mine([authored()])
+    item.update_notifications([note("101", 12), note("102", 40, "issue")])
     return item
+
+
+@pytest.fixture
+def marked(monkeypatch):
+    """Record mark-read calls instead of sending them to GitHub."""
+    from reviewbot import board as board_module
+
+    calls = []
+
+    async def mark(thread_id):
+        calls.append(thread_id)
+
+    monkeypatch.setattr(board_module, "mark_notification_read", mark)
+    return calls
 
 
 def test_serve_table_requires_every_field(tmp_path):
@@ -97,7 +122,7 @@ def test_board_only_resolves_known_prs(tmp_path):
 def dashboard(tmp_path):
     config = write(tmp_path)
     item = board(config)
-    item.queue_at = item.mine_at = time.time() + 3600
+    item.queue_at = item.mine_at = item.notes_at = time.time() + 3600
     server = Dashboard(config, item, listen=Listen("127.0.0.1", ("127.0.0.1", "localhost"), "127.0.0.1"))
     server.start()
     yield server
@@ -173,7 +198,10 @@ def test_http_mcp_lists_tools_and_queue(dashboard):
     assert response.status == 202
     _, data = mcp(dashboard, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     names = [tool["name"] for tool in json.loads(data)["result"]["tools"]]
-    assert names == ["list_review_queue", "list_my_prs", "open_pr"]
+    assert names == [
+        "list_review_queue", "list_my_prs", "list_notifications", "mark_notification_read",
+        "open_pr",
+    ]
     _, data = mcp(dashboard, {
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
         "params": {"name": "list_review_queue", "arguments": {"actionable_only": True}},
@@ -184,7 +212,7 @@ def test_http_mcp_lists_tools_and_queue(dashboard):
 
 def test_open_pr_opens_only_known_prs(tmp_path, monkeypatch):
     item = board(write(tmp_path))
-    item.queue_at = item.mine_at = time.time() + 3600
+    item.queue_at = item.mine_at = item.notes_at = time.time() + 3600
     opened = []
     server = McpServer(item, opener=opened.append)
 
@@ -212,3 +240,51 @@ def test_stdio_answers_requests_and_skips_notifications(tmp_path):
     assert replies[0] == {"jsonrpc": "2.0", "id": 1, "result": {}}
     assert replies[1]["error"]["code"] == -32700
     assert len(replies) == 2
+
+
+def test_snapshot_lists_notifications_and_opens_them(tmp_path):
+    item = board(write(tmp_path))
+    data = item.snapshot()
+    assert [n["key"] for n in data["notifications"]] == ["acme/demo#12", "acme/demo#40"]
+    assert data["notifications"][1]["url"] == "https://github.com/acme/demo/issues/40"
+    assert item.find_url("acme/demo#40") == "https://github.com/acme/demo/issues/40"
+
+
+def test_mcp_marks_only_known_notifications_read(tmp_path, marked):
+    item = board(write(tmp_path))
+    item.queue_at = item.mine_at = item.notes_at = time.time() + 3600
+    server = McpServer(item, opener=lambda url: None)
+
+    def call(name, arguments):
+        return server.handle({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        })["result"]
+
+    listed = call("list_notifications", {})["structuredContent"]["notifications"]
+    assert [n["id"] for n in listed] == ["101", "102"]
+    assert call("mark_notification_read", {"id": "999"})["isError"] is True
+    assert call("mark_notification_read", {"id": "101"})["structuredContent"] == {
+        "marked_read": "101", "key": "acme/demo#12",
+    }
+    assert marked == ["101"]
+    listed = call("list_notifications", {})["structuredContent"]["notifications"]
+    assert [n["id"] for n in listed] == ["102"]
+
+
+def test_dashboard_marks_read_with_the_cookie_but_not_cross_site(dashboard, marked):
+    body = json.dumps({"id": "102"})
+    json_type = {"Content-Type": "application/json"}
+    cookie = {**json_type, "Cookie": f"{COOKIE}={dashboard.token}"}
+    path = "/api/notifications/read"
+    assert request(dashboard, "POST", path, body=body, headers=json_type)[0].status == 401
+    foreign = {**cookie, "Origin": "https://evil.example"}
+    assert request(dashboard, "POST", path, body=body, headers=foreign)[0].status == 403
+    form = {**cookie, "Content-Type": "text/plain"}
+    assert request(dashboard, "POST", path, body=body, headers=form)[0].status == 415
+    assert marked == []
+    response, data = request(dashboard, "POST", path, body=body, headers=cookie)
+    assert response.status == 200 and json.loads(data)["key"] == "acme/demo#40"
+    assert marked == ["102"]
+    unknown = json.dumps({"id": "102"})
+    assert request(dashboard, "POST", path, body=unknown, headers=cookie)[0].status == 404

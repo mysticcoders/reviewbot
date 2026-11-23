@@ -19,8 +19,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from .board import Board
+from .board import Board, OpenError
 from .config import Config, Serve
+from .github import GhError
 from .mcp import McpServer, handle_payload
 from .tailnet import Node, TailnetError
 
@@ -210,13 +211,22 @@ class _Handler(BaseHTTPRequestHandler):
         })
 
     def do_POST(self) -> None:
+        """Serve MCP (bearer token) and the dashboard's mark-read call (bearer or cookie).
+
+        Both require a JSON body, which a cross-site form cannot send without a preflight.
+        """
         if not self._guard():
             return
-        if urlsplit(self.path).path != "/mcp":
+        path = urlsplit(self.path).path
+        if path == "/mcp":
+            allowed = self._token_ok(self._bearer())
+        elif path == "/api/notifications/read":
+            allowed = self._token_ok(self._bearer()) or self._token_ok(self._cookie())
+        else:
             self._send(HTTPStatus.NOT_FOUND, b"not found\n")
             return
-        if not self._token_ok(self._bearer()):
-            self._json(HTTPStatus.UNAUTHORIZED, {"error": "bearer token required"})
+        if not allowed:
+            self._json(HTTPStatus.UNAUTHORIZED, {"error": "token required"})
             return
         if "application/json" not in (self.headers.get("Content-Type") or ""):
             self._send(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, b"application/json required\n")
@@ -235,11 +245,30 @@ class _Handler(BaseHTTPRequestHandler):
                 "jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"},
             })
             return
+        if path == "/api/notifications/read":
+            self._mark_read(payload)
+            return
         reply = handle_payload(self.server.mcp, payload)
         if reply is None:
             self._send(HTTPStatus.ACCEPTED)
         else:
             self._json(HTTPStatus.OK, reply)
+
+
+    def _mark_read(self, payload: Any) -> None:
+        thread_id = payload.get("id") if isinstance(payload, dict) else None
+        if not isinstance(thread_id, str) or not thread_id:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "`id` is required"})
+            return
+        try:
+            item = self.server.board.mark_read(thread_id)
+        except OpenError as error:
+            self._json(HTTPStatus.NOT_FOUND, {"error": str(error)})
+            return
+        except GhError as error:
+            self._json(HTTPStatus.BAD_GATEWAY, {"error": str(error)})
+            return
+        self._json(HTTPStatus.OK, {"marked_read": item.id, "key": item.key})
 
 
 class _HttpServer(ThreadingHTTPServer):

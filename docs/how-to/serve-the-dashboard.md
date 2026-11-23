@@ -1,9 +1,11 @@
 # Serve the dashboard and MCP endpoint
 
-ReviewBot can serve the two queues in two ways:
+ReviewBot can serve the two queues and your unread notifications in two ways:
 
 - as a web page, where each PR is a link that opens in a browser that is signed in to GitHub;
-- as an MCP server, so an agent can list your queue and open a PR in that browser for you.
+- as an MCP server, so an agent can list your queue and notifications, open a PR in that browser for you, and mark notifications read.
+
+On the web page, opening a notification or pressing **Mark read** marks it read on GitHub.
 
 For how access is limited, read [The security model of `serve`](../explanation/security-model.md).
 
@@ -35,7 +37,7 @@ Run it in the foreground:
 reviewbot serve
 ```
 
-This serves the dashboard at `/`, JSON at `/api/prs`, and MCP at `/mcp`. Press `ctrl+c` to stop it.
+This serves the dashboard at `/`, JSON at `/api/prs` (including `notifications`), and MCP at `/mcp`. Press `ctrl+c` to stop it.
 
 Or let the TUI host it:
 

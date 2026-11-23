@@ -57,7 +57,7 @@ Each `[[agents]]` table defines one agent.
 | `name` | yes | 1–16 characters: lowercase letters, digits, `-` or `_`. Unique across agents, groups and combats. Used with `--agent` and in tab names. |
 | `kind` | yes | The kind of agent. ReviewBot records it with saved reviews. With Herdr, it goes to `herdr agent start --kind`, and `doctor` looks for an executable of that name. Run `herdr agent start --help` for the supported kinds. |
 | `command` | with Rex | The program that Rex runs in the tab, and the executable that `doctor` looks for. Herdr ignores it. |
-| `key` | no | One letter or digit for the TUI. `q`, `r`, `o`, `1`, `2`, `a` and `e` belong to the TUI. Keys must not repeat. |
+| `key` | no | One letter or digit for the TUI. `q`, `r`, `o`, `1`, `2`, `3`, `a` and `e` belong to the TUI. Keys must not repeat. |
 | `args` | no | Extra arguments for the agent's command line. |
 | `prompt` | no | This agent's prompt file. Each agent needs a prompt: its own, or the top-level `prompt`. |
 

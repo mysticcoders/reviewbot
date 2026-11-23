@@ -9,12 +9,15 @@ from typing import Any, TextIO
 
 from . import __version__
 from .board import Board, OpenError, open_in_browser
+from .github import GhError
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 INSTRUCTIONS = (
-    "ReviewBot lists the GitHub pull requests waiting on the user's review and the user's own "
-    "open pull requests. Use open_pr to open one in the user's signed-in browser."
+    "ReviewBot lists the GitHub pull requests waiting on the user's review, the user's own "
+    "open pull requests, and the user's unread GitHub notifications about pull requests and "
+    "issues in watched repositories. Use open_pr to open one in the user's signed-in browser, "
+    "and mark_notification_read once the user has dealt with a notification."
 )
 
 TOOLS: list[dict[str, Any]] = [
@@ -54,16 +57,52 @@ TOOLS: list[dict[str, Any]] = [
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
     },
     {
-        "name": "open_pr",
+        "name": "list_notifications",
         "description": (
-            "Open a pull request from the review queue or the user's open PRs in the user's "
-            "configured, signed-in browser on their computer. Accepts owner/repo#number or the "
-            "PR URL."
+            "List the user's unread GitHub notifications about pull requests and issues in "
+            "watched repositories: thread id, owner/repo#number, kind (pr or issue), title, "
+            "reason (such as comment, mention, review_requested, author, assign, state_change), "
+            "updated time, and URL."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "pr": {"type": "string", "description": "owner/repo#number or the PR URL."},
+                "refresh": {"type": "boolean", "description": "Fetch fresh data from GitHub."},
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+    },
+    {
+        "name": "mark_notification_read",
+        "description": (
+            "Mark one unread notification read on GitHub, by the thread id from "
+            "list_notifications. Only the user sees read state; nothing is posted."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Thread id from list_notifications."},
+            },
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True,
+            "openWorldHint": True,
+        },
+    },
+    {
+        "name": "open_pr",
+        "description": (
+            "Open a pull request from the review queue, the user's open PRs, or a notification "
+            "in the user's configured, signed-in browser on their computer. Accepts "
+            "owner/repo#number or the URL."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pr": {"type": "string", "description": "owner/repo#number or the URL."},
             },
             "required": ["pr"],
             "additionalProperties": False,
@@ -133,6 +172,22 @@ class McpServer:
                 {"scope": snapshot["scope"], "mine": snapshot["mine"],
                  "error": snapshot["errors"].get("mine")},
             ))
+        if name == "list_notifications":
+            self.board.refresh(force=bool(arguments.get("refresh")))
+            snapshot = self.board.snapshot()
+            return _result(request_id, _tool_result(
+                {"scope": snapshot["scope"], "notifications": snapshot["notifications"],
+                 "error": snapshot["errors"].get("notifications")},
+            ))
+        if name == "mark_notification_read":
+            thread_id = arguments.get("id")
+            if not isinstance(thread_id, str) or not thread_id.strip():
+                return _result(request_id, _tool_error("`id` is required"))
+            try:
+                item = self.board.mark_read(thread_id.strip())
+            except (OpenError, GhError) as error:
+                return _result(request_id, _tool_error(str(error)))
+            return _result(request_id, _tool_result({"marked_read": item.id, "key": item.key}))
         if name == "open_pr":
             target = arguments.get("pr")
             if not isinstance(target, str) or not target.strip():

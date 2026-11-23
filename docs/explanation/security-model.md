@@ -1,6 +1,6 @@
 # The security model of `serve`
 
-`reviewbot serve` puts your PR lists on an HTTP port, and lets MCP clients open PRs in your browser. ReviewBot limits who can reach it in layers. Each layer stops a different attack.
+`reviewbot serve` puts your PR lists and unread notifications on an HTTP port, lets MCP clients open PRs in your browser, and lets the dashboard and MCP clients mark notifications read. ReviewBot limits who can reach it in layers. Each layer stops a different attack.
 
 ## Binding
 
@@ -27,7 +27,13 @@ These checks stop DNS rebinding. They also stop other websites in your browser f
 
 ## What `open_pr` can open
 
-`open_pr` opens only a PR that is on one of the two lists. So a client cannot use it to send your browser to any other address.
+`open_pr` opens only a PR on one of the two lists, or the PR or issue of an unread notification. So a client cannot use it to send your browser to any other address.
+
+## Marking notifications read
+
+Marking a notification read is the only change `serve` makes on GitHub. It accepts only the ID of a notification on the board, so a client cannot change any other thread.
+
+The dashboard marks a notification read with a `POST` to `/api/notifications/read`, authorized by its cookie. A cross-site page cannot make that request for you: the cookie is `SameSite=Strict`, the `Origin` check refuses other sites, and the body must be JSON, which a plain HTML form cannot send.
 
 ## Stdio
 

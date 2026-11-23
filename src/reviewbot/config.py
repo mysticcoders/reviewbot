@@ -10,7 +10,7 @@ from pathlib import Path
 CONFIG_DIR = Path("~/.config/reviewbot").expanduser()
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 
-RESERVED_KEYS = frozenset("qro12ae")
+RESERVED_KEYS = frozenset("qro123ae")
 NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,15}")
 KEY_PATTERN = re.compile(r"[A-Za-z0-9]")
 MULTIPLEXERS = {"herdr": "Herdr", "rex": "Rex"}
@@ -67,6 +67,17 @@ class Scope:
         owner, _, name = repo.partition("/")
         single = self.single_owner
         return name if single and owner.lower() == single else repo
+
+    def contains(self, repo: str) -> bool:
+        """Whether OWNER/REPO is watched, ignoring case."""
+        if self.is_all:
+            return True
+        wanted = repo.lower()
+        owner = wanted.split("/", 1)[0]
+        return (
+            any(owner == item.lower() for item in self.owners)
+            or any(wanted == item.lower() for item in self.repos)
+        )
 
     def describe(self) -> str:
         if self.is_all:

@@ -1,9 +1,10 @@
-"""Textual picker for the review-request queue and the user's own open PRs."""
+"""Textual picker for the review-request queue, the user's own open PRs, and notifications."""
 
 from __future__ import annotations
 
 import asyncio
 import subprocess
+from datetime import UTC, datetime
 from typing import ClassVar
 
 from textual.app import App, ComposeResult
@@ -27,8 +28,11 @@ from ..config import Config
 from ..github import (
     AuthoredPR,
     GhError,
+    Notification,
     ReviewCandidate,
     authored_prs,
+    mark_notification_read,
+    notifications,
     request_reviewers,
     review_queue,
 )
@@ -38,6 +42,7 @@ from ..run import collects, launch_review
 from ..server import Dashboard, ServeError
 
 TAB_POLL_SECONDS = 3
+NOTES_POLL_SECONDS = 120
 
 
 def _display_status(candidate: ReviewCandidate, active: set[str]) -> str:
@@ -46,8 +51,30 @@ def _display_status(candidate: ReviewCandidate, active: set[str]) -> str:
 
 QUEUE_TAB = "queue-tab"
 MINE_TAB = "mine-tab"
+NOTES_TAB = "notes-tab"
 QUEUE_ACTIONS = {"launch"}
 MINE_ACTIONS = {"request_review", "rerequest_stale"}
+UNREAD = " *"
+
+
+def _ago(iso: str) -> str:
+    """Render an ISO timestamp as a short age such as 5m, 3h, or 2d."""
+    try:
+        then = datetime.fromisoformat(iso)
+    except ValueError:
+        return ""
+    minutes = max(0, int((datetime.now(UTC) - then).total_seconds() // 60))
+    if minutes < 60:
+        return f"{minutes}m"
+    if minutes < 1440:
+        return f"{minutes // 60}h"
+    return f"{minutes // 1440}d"
+
+
+class NotesTable(DataTable[str]):
+    """The notifications table; `m` marks the selected notification read."""
+
+    BINDINGS: ClassVar[list[Binding]] = [Binding("m", "app.mark_read", "Mark read")]
 
 
 def _parse_reviewers(text: str) -> list[str]:
@@ -142,6 +169,7 @@ class ReviewQueueApp(App[None]):
         Binding("o", "open_pr", "Open PR"),
         Binding("1", "show_tab('queue-tab')", "Reviews", show=False),
         Binding("2", "show_tab('mine-tab')", "My PRs", show=False),
+        Binding("3", "show_tab('notes-tab')", "Notifications", show=False),
         Binding("a", "request_review", "Request review"),
         Binding("e", "rerequest_stale", "Re-request stale"),
         Binding("ctrl+w", "toggle_serve", "Serve"),
@@ -159,14 +187,17 @@ class ReviewQueueApp(App[None]):
                 self.bind(launcher.key, f"launch({launcher.name!r})", description=launcher.name)
         self._table: DataTable[str]
         self._mine_table: DataTable[str]
+        self._notes_table: NotesTable
         self._detail: Static
         self._status_line: Static
         self._candidates: list[ReviewCandidate] = []
         self._authored: list[AuthoredPR] = []
+        self._notes: list[Notification] = []
         self._active: set[str] = set()
         self._launching = False
         self._requesting = False
         self._syncing = False
+        self._marking = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -179,6 +210,10 @@ class ReviewQueueApp(App[None]):
                 self._mine_table = DataTable(id="mine", cursor_type="row", zebra_stripes=True)
                 self._mine_table.add_columns("Status", "Repository", "PR", "Checks", "Reviews", "Title")
                 yield self._mine_table
+            with TabPane("Notifications [3]", id=NOTES_TAB):
+                self._notes_table = NotesTable(id="notes", cursor_type="row", zebra_stripes=True)
+                self._notes_table.add_columns("Reason", "Repository", "Number", "Kind", "Age", "Title")
+                yield self._notes_table
         self._detail = Static("Loading review requests…", id="detail")
         yield self._detail
         self._status_line = Static("", id="status-line")
@@ -190,7 +225,9 @@ class ReviewQueueApp(App[None]):
         self.sub_title = self.config.scope.describe()
         await self._refresh_queue()
         self.run_worker(self._refresh_mine(quiet=True), exclusive=False)
+        self.run_worker(self._refresh_notes(quiet=True), exclusive=False)
         self.set_interval(TAB_POLL_SECONDS, self._sync_active)
+        self.set_interval(NOTES_POLL_SECONDS, self._poll_notes)
         if self._serve_on_mount:
             self.run_worker(self._start_serve(open_browser=False))
 
@@ -258,23 +295,33 @@ class ReviewQueueApp(App[None]):
         self._status_line.update(f"Stopped serving {dashboard.url}")
 
     @property
+    def _tab(self) -> str:
+        return self.query_one("#tabs", TabbedContent).active
+
+    @property
     def _on_mine(self) -> bool:
-        return self.query_one("#tabs", TabbedContent).active == MINE_TAB
+        return self._tab == MINE_TAB
+
+    @property
+    def _on_notes(self) -> bool:
+        return self._tab == NOTES_TAB
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if isinstance(self.screen, ModalScreen):
             return False
         if action in QUEUE_ACTIONS:
-            return not self._on_mine
+            return self._tab == QUEUE_TAB
         if action in MINE_ACTIONS:
             return self._on_mine
+        if action == "mark_read":
+            return self._on_notes
         return True
 
     def on_tabbed_content_tab_activated(self, _: TabbedContent.TabActivated) -> None:
         self.refresh_bindings()
         self._show_selected()
         self._show_summary()
-        (self._mine_table if self._on_mine else self._table).focus()
+        {MINE_TAB: self._mine_table, NOTES_TAB: self._notes_table}.get(self._tab, self._table).focus()
 
     def action_show_tab(self, tab: str) -> None:
         self.query_one("#tabs", TabbedContent).active = tab
@@ -287,9 +334,24 @@ class ReviewQueueApp(App[None]):
         row = self._mine_table.cursor_row
         return self._authored[row] if 0 <= row < len(self._authored) else None
 
+    def _selected_note(self) -> Notification | None:
+        row = self._notes_table.cursor_row
+        return self._notes[row] if 0 <= row < len(self._notes) else None
+
+    def _unread_reasons(self, key: str) -> str:
+        """The reasons of unread notifications about one PR, for the detail pane."""
+        reasons = dict.fromkeys(note.reason_label for note in self._notes if note.key == key)
+        return f" · [bold]unread:[/bold] {', '.join(reasons)}" if reasons else ""
+
+    def _pr_cell(self, number: int, key: str) -> str:
+        return f"{number}{UNREAD}" if any(note.key == key for note in self._notes) else str(number)
+
     def _show_selected(self) -> None:
         if self._on_mine:
             self._show_selected_mine()
+            return
+        if self._on_notes:
+            self._show_selected_note()
             return
         candidate = self._selected()
         if candidate is None:
@@ -303,7 +365,7 @@ class ReviewQueueApp(App[None]):
                 f"{candidate.commits_since_review} newer commit(s)"
             )
         self._detail.update(
-            f"[bold]{candidate.key}[/bold] — {candidate.title}\n"
+            f"[bold]{candidate.key}[/bold] — {candidate.title}{self._unread_reasons(candidate.key)}\n"
             f"{candidate.base_branch} ← {candidate.head_branch} ({candidate.head_sha[:7]})"
             f"{previous}\n{candidate.url}"
         )
@@ -318,15 +380,29 @@ class ReviewQueueApp(App[None]):
         mergeable = pr.mergeable.lower() or "unknown"
         decision = pr.review_decision.lower().replace("_", " ") or "no decision"
         self._detail.update(
-            f"[bold]{pr.key}[/bold] — {pr.title}\n"
+            f"[bold]{pr.key}[/bold] — {pr.title}{self._unread_reasons(pr.key)}\n"
             f"{pr.base_branch} ← {pr.head_branch} ({pr.head_sha[:7]}) · "
             f"{decision} · {mergeable} · checks {pr.checks}\n"
             f"Reviewers: {reviewers}{suggested}\n{pr.url}"
         )
 
+    def _show_selected_note(self) -> None:
+        note = self._selected_note()
+        if note is None:
+            self._detail.update("No unread notifications.")
+            return
+        kind = "pull request" if note.kind == "pr" else "issue"
+        self._detail.update(
+            f"[bold]{note.key}[/bold] — {note.title}\n"
+            f"{kind} · {note.reason_label} · updated {_ago(note.updated_at)} ago\n"
+            f"{note.url}\no opens it and marks it read · m marks it read"
+        )
+
     async def action_refresh(self) -> None:
         if self._on_mine:
             await self._refresh_mine()
+        elif self._on_notes:
+            await self._refresh_notes()
         else:
             await self._refresh_queue()
 
@@ -349,7 +425,7 @@ class ReviewQueueApp(App[None]):
             self._table.add_row(
                 _display_status(candidate, active),
                 self.config.scope.label(candidate.repo),
-                str(candidate.number),
+                self._pr_cell(candidate.number, candidate.key),
                 candidate.checks,
                 candidate.request_source,
                 f"@{candidate.author}",
@@ -408,7 +484,7 @@ class ReviewQueueApp(App[None]):
             self._mine_table.add_row(
                 pr.status.value,
                 self.config.scope.label(pr.repo),
-                str(pr.number),
+                self._pr_cell(pr.number, pr.key),
                 pr.checks,
                 pr.reviewer_summary,
                 pr.title,
@@ -419,7 +495,76 @@ class ReviewQueueApp(App[None]):
             self._show_summary()
             self._show_selected()
 
+    async def _poll_notes(self) -> None:
+        await self._refresh_notes(quiet=True)
+
+    async def _refresh_notes(self, *, quiet: bool = False) -> None:
+        """Fetch unread notifications, redraw their tab, and mark PR rows that have any."""
+        if not quiet:
+            self._status_line.update(f"Fetching notifications in {self.config.scope.describe()}…")
+        try:
+            notes = await notifications(self.config.scope)
+        except (GhError, OSError) as error:
+            if not quiet or self._on_notes:
+                self._status_line.update(f"[red]Notifications refresh failed:[/red] {error}")
+            return
+        self._show_notes(notes)
+        self.board.update_notifications(notes)
+
+    def _show_notes(self, notes: list[Notification]) -> None:
+        selected = self._selected_note()
+        self._notes = notes
+        self._notes_table.clear()
+        for note in notes:
+            self._notes_table.add_row(
+                note.reason_label,
+                self.config.scope.label(note.repo),
+                str(note.number),
+                "PR" if note.kind == "pr" else "issue",
+                _ago(note.updated_at),
+                note.title,
+            )
+        ids = [note.id for note in notes]
+        if selected is not None and selected.id in ids:
+            self._notes_table.move_cursor(row=ids.index(selected.id))
+        label = f"Notifications ({len(notes)}) [3]" if notes else "Notifications [3]"
+        self.query_one("#tabs", TabbedContent).get_tab(NOTES_TAB).label = label
+        for row, candidate in enumerate(self._candidates):
+            self._table.update_cell_at((row, 2), self._pr_cell(candidate.number, candidate.key))
+        for row, pr in enumerate(self._authored):
+            self._mine_table.update_cell_at((row, 2), self._pr_cell(pr.number, pr.key))
+        self._show_selected()
+        if self._on_notes:
+            self._show_summary()
+
+    async def action_mark_read(self) -> None:
+        note = self._selected_note()
+        if note is not None:
+            await self._mark_read(note)
+
+    async def _mark_read(self, note: Notification) -> bool:
+        if self._marking:
+            return False
+        self._marking = True
+        try:
+            await mark_notification_read(note.id)
+        except (GhError, OSError) as error:
+            self._status_line.update(f"[red]Mark read failed:[/red] {error}")
+            return False
+        finally:
+            self._marking = False
+        self._show_notes([item for item in self._notes if item.id != note.id])
+        self.board.update_notifications(self._notes)
+        self._status_line.update(f"Marked {note.key} read")
+        return True
+
     def _show_summary(self) -> None:
+        if self._on_notes:
+            prs = sum(note.kind == "pr" for note in self._notes)
+            self._status_line.update(
+                f"{len(self._notes)} unread · {prs} on PRs · {len(self._notes) - prs} on issues"
+            )
+            return
         if self._on_mine:
             needing = sum(bool(pr.rerequest_targets) for pr in self._authored)
             self._status_line.update(
@@ -438,16 +583,28 @@ class ReviewQueueApp(App[None]):
     def on_data_table_row_highlighted(self, _: DataTable.RowHighlighted) -> None:
         self._show_selected()
 
-    def action_open_pr(self) -> None:
+    async def action_open_pr(self) -> None:
+        if self._on_notes:
+            note = self._selected_note()
+            if note is None:
+                return
+            command = "pr" if note.kind == "pr" else "issue"
+            self._open_web(command, note.number, note.repo)
+            if await self._mark_read(note):
+                self._status_line.update(f"Opening {note.url} · marked read")
+            return
         target = self._selected_mine() if self._on_mine else self._selected()
         if target is None:
             return
+        self._open_web("pr", target.number, target.repo)
+        self._status_line.update(f"Opening {target.url}")
+
+    def _open_web(self, command: str, number: int, repo: str) -> None:
         subprocess.Popen(
-            ["gh", "pr", "view", str(target.number), "--repo", target.repo, "--web"],
+            ["gh", command, "view", str(number), "--repo", repo, "--web"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        self._status_line.update(f"Opening {target.url}")
 
     async def _request(self, pr: AuthoredPR, reviewers: list[str]) -> None:
         if not reviewers or self._requesting:

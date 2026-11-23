@@ -7,6 +7,10 @@ your attention. It shows two queues:
   to review.
 - **My PRs**: your own open PRs, with checks, conflicts, and per-reviewer status.
 
+A third tab lists your unread GitHub notifications about PRs and issues in the
+repositories you watch, and marks the PRs in the two queues that have unread
+activity.
+
 From the review queue, one keypress checks the PR out into an isolated worktree
 and starts one of your configured review agents (Claude Code, Codex, Gemini,
 or any other agent CLI) in a new tab of your terminal multiplexer, primed with

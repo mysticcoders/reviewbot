@@ -8,10 +8,10 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from collections.abc import Callable
 from dataclasses import replace
 from importlib import resources
 from pathlib import Path
-from typing import Callable
 
 import click
 from rich.console import Console
@@ -519,7 +519,7 @@ def _serve_settings(
     if config.serve is None:
         raise click.ClickException(
             f"add a `[serve]` table (port, bind, browser) to {config.path}; "
-            "see 'Dashboard and MCP' in the README"
+            "see docs/how-to/serve-the-dashboard.md"
         )
     bind = bind or config.serve.bind
     if bind == "tailscale-node":

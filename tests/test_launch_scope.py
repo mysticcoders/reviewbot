@@ -1,7 +1,7 @@
 """PR scope must survive stale caches and reused worktrees."""
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-import subprocess
 
 from reviewbot.launch import prepare_checkout
 

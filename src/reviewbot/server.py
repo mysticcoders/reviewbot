@@ -9,13 +9,14 @@ import secrets
 import shutil
 import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from http import HTTPStatus
-from http.cookies import SimpleCookie
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from .board import Board
@@ -101,7 +102,7 @@ def resolve_listen(bind: str) -> Listen:
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server: "_HttpServer"
+    server: _HttpServer
     protocol_version = "HTTP/1.1"
     server_version = "ReviewBot"
 
@@ -131,7 +132,7 @@ class _Handler(BaseHTTPRequestHandler):
         cookie = SimpleCookie()
         try:
             cookie.load(self.headers.get("Cookie") or "")
-        except Exception:
+        except CookieError:
             return None
         morsel = cookie.get(COOKIE)
         return morsel.value if morsel else None

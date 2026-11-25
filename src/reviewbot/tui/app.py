@@ -23,18 +23,18 @@ from textual.widgets import (
     TabPane,
 )
 
-from ..board import Board, OpenError, open_in_browser
+from ..board import CHOICES, Board, OpenError, open_in_browser
 from ..config import Config
 from ..github import (
     AuthoredPR,
     GhError,
     Notification,
     ReviewCandidate,
-    authored_prs,
     mark_notification_read,
+    my_prs,
     notifications,
+    open_prs,
     request_reviewers,
-    review_queue,
 )
 from ..launch import LaunchError
 from ..multiplexer import active_review_keys
@@ -55,6 +55,8 @@ NOTES_TAB = "notes-tab"
 QUEUE_ACTIONS = {"launch"}
 MINE_ACTIONS = {"request_review", "rerequest_stale"}
 UNREAD = " *"
+TAB_VIEWS = {QUEUE_TAB: "queue", MINE_TAB: "mine", NOTES_TAB: "notifications"}
+TAB_NAMES = {"queue": ("Open PRs", 1), "mine": ("My PRs", 2), "notifications": ("Notifications", 3)}
 
 
 def escape(text: str) -> str:
@@ -78,6 +80,15 @@ def _ago(iso: str) -> str:
     if minutes < 1440:
         return f"{minutes // 60}h"
     return f"{minutes // 1440}d"
+
+
+def _request_text(source: str) -> str:
+    """Say how the user's review was asked for, for the detail pane."""
+    if source == "none":
+        return "your review was not requested"
+    if source == "direct":
+        return "review requested from you"
+    return f"review requested from {escape(source.removeprefix('team:'))}"
 
 
 class NotesTable(DataTable[str]):
@@ -176,11 +187,12 @@ class ReviewQueueApp(App[None]):
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("o", "open_pr", "Open PR"),
-        Binding("1", "show_tab('queue-tab')", "Reviews", show=False),
+        Binding("1", "show_tab('queue-tab')", "Open PRs", show=False),
         Binding("2", "show_tab('mine-tab')", "My PRs", show=False),
         Binding("3", "show_tab('notes-tab')", "Notifications", show=False),
         Binding("a", "request_review", "Request review"),
         Binding("e", "rerequest_stale", "Re-request stale"),
+        Binding("f", "cycle_filter", "Filter"),
         Binding("ctrl+w", "toggle_serve", "Serve"),
     ]
 
@@ -207,23 +219,30 @@ class ReviewQueueApp(App[None]):
         self._requesting = False
         self._syncing = False
         self._marking = False
+        self._views = {
+            "queue": config.filters.open,
+            "mine": config.filters.mine,
+            "notifications": config.filters.notifications,
+        }
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         with TabbedContent(initial=QUEUE_TAB, id="tabs"):
-            with TabPane("Review requests [1]", id=QUEUE_TAB):
+            with TabPane("Open PRs [1]", id=QUEUE_TAB):
                 self._table = DataTable(id="queue", cursor_type="row", zebra_stripes=True)
                 self._table.add_columns("Status", "Repository", "PR", "Checks", "Request", "Author", "Title")
                 yield self._table
             with TabPane("My PRs [2]", id=MINE_TAB):
                 self._mine_table = DataTable(id="mine", cursor_type="row", zebra_stripes=True)
-                self._mine_table.add_columns("Status", "Repository", "PR", "Checks", "Reviews", "Title")
+                self._mine_table.add_columns(
+                    "Status", "Repository", "PR", "Checks", "Role", "Reviews", "Title",
+                )
                 yield self._mine_table
             with TabPane("Notifications [3]", id=NOTES_TAB):
                 self._notes_table = NotesTable(id="notes", cursor_type="row", zebra_stripes=True)
                 self._notes_table.add_columns("Reason", "Repository", "Number", "Kind", "Age", "Title")
                 yield self._notes_table
-        self._detail = Static("Loading review requests…", id="detail")
+        self._detail = Static("Loading open PRs…", id="detail")
         yield self._detail
         self._status_line = Static("", id="status-line")
         yield self._status_line
@@ -380,7 +399,8 @@ class ReviewQueueApp(App[None]):
             f"[bold]{escape(candidate.key)}[/bold] — {escape(candidate.title)}"
             f"{self._unread_reasons(candidate.key)}\n"
             f"{escape(candidate.base_branch)} ← {escape(candidate.head_branch)} "
-            f"({candidate.head_sha[:7]}){previous}\n{escape(candidate.url)}"
+            f"({candidate.head_sha[:7]}) · {_request_text(candidate.request_source)}"
+            f"{previous}\n{escape(candidate.url)}"
         )
 
     def _show_selected_mine(self) -> None:
@@ -424,7 +444,9 @@ class ReviewQueueApp(App[None]):
             return
         self._status_line.update(f"Fetching review requests in {self.config.scope.describe()}…")
         try:
-            candidates = await review_queue(self.config.scope)
+            candidates = await open_prs(
+                self.config.scope, self._views["queue"], self.config.filters.stale_days,
+            )
             active = await asyncio.to_thread(active_review_keys, self.config, candidates)
         except (GhError, LaunchError, OSError) as error:
             self._status_line.update(f"[red]Refresh failed:[/red] {escape(str(error))}")
@@ -432,7 +454,7 @@ class ReviewQueueApp(App[None]):
         selected = self._selected()
         self._candidates = candidates
         self._active = active
-        self.board.update_queue(candidates, active)
+        self.board.update_queue(candidates, active, self._views["queue"])
         self._table.clear()
         for candidate in candidates:
             self._table.add_row(
@@ -447,7 +469,8 @@ class ReviewQueueApp(App[None]):
         keys = [candidate.key for candidate in candidates]
         if selected is not None and selected.key in keys:
             self._table.move_cursor(row=keys.index(selected.key))
-        if not self._on_mine:
+        self._label_tabs()
+        if self._tab == QUEUE_TAB:
             self._show_summary()
             self._show_selected()
 
@@ -474,7 +497,7 @@ class ReviewQueueApp(App[None]):
             self.board.update_active(active)
             for row, candidate in enumerate(candidates):
                 self._table.update_cell_at((row, 0), _display_status(candidate, active))
-            if not self._on_mine:
+            if self._tab == QUEUE_TAB:
                 self._show_summary()
         finally:
             self._syncing = False
@@ -485,13 +508,15 @@ class ReviewQueueApp(App[None]):
         if not quiet:
             self._status_line.update(f"Fetching your open PRs in {self.config.scope.describe()}…")
         try:
-            authored = await authored_prs(self.config.scope)
+            authored = await my_prs(
+                self.config.scope, self._views["mine"], self.config.filters.stale_days,
+            )
         except (GhError, OSError) as error:
             self._status_line.update(f"[red]My PRs refresh failed:[/red] {escape(str(error))}")
             return
         row = self._mine_table.cursor_row
         self._authored = authored
-        self.board.update_mine(authored)
+        self.board.update_mine(authored, self._views["mine"])
         self._mine_table.clear()
         for pr in authored:
             self._mine_table.add_row(
@@ -499,11 +524,13 @@ class ReviewQueueApp(App[None]):
                 escape(self.config.scope.label(pr.repo)),
                 self._pr_cell(pr.number, pr.key),
                 pr.checks,
+                pr.role_label,
                 escape(pr.reviewer_summary),
                 escape(pr.title),
             )
         if authored:
             self._mine_table.move_cursor(row=min(row, len(authored) - 1))
+        self._label_tabs()
         if self._on_mine:
             self._show_summary()
             self._show_selected()
@@ -516,13 +543,16 @@ class ReviewQueueApp(App[None]):
         if not quiet:
             self._status_line.update(f"Fetching notifications in {self.config.scope.describe()}…")
         try:
-            notes = await notifications(self.config.scope)
+            notes = await notifications(
+                self.config.scope, self._views["notifications"],
+                self.config.filters.notification_kinds,
+            )
         except (GhError, OSError) as error:
             if not quiet or self._on_notes:
                 self._status_line.update(f"[red]Notifications refresh failed:[/red] {escape(str(error))}")
             return
         self._show_notes(notes)
-        self.board.update_notifications(notes)
+        self.board.update_notifications(notes, self._views["notifications"])
 
     def _show_notes(self, notes: list[Notification]) -> None:
         selected = self._selected_note()
@@ -540,8 +570,7 @@ class ReviewQueueApp(App[None]):
         ids = [note.id for note in notes]
         if selected is not None and selected.id in ids:
             self._notes_table.move_cursor(row=ids.index(selected.id))
-        label = f"Notifications ({len(notes)}) [3]" if notes else "Notifications [3]"
-        self.query_one("#tabs", TabbedContent).get_tab(NOTES_TAB).label = label
+        self._label_tabs()
         for row, candidate in enumerate(self._candidates):
             self._table.update_cell_at((row, 2), self._pr_cell(candidate.number, candidate.key))
         for row, pr in enumerate(self._authored):
@@ -567,9 +596,43 @@ class ReviewQueueApp(App[None]):
         finally:
             self._marking = False
         self._show_notes([item for item in self._notes if item.id != note.id])
-        self.board.update_notifications(self._notes)
+        self.board.update_notifications(self._notes, self._views["notifications"])
         self._status_line.update(f"Marked {escape(note.key)} read")
         return True
+
+    def _label_tabs(self) -> None:
+        """Title each tab with its filter and count, e.g. `Open PRs: all (14) [1]`."""
+        counts = {
+            "queue": len(self._candidates), "mine": len(self._authored),
+            "notifications": len(self._notes),
+        }
+        tabs = self.query_one("#tabs", TabbedContent)
+        for tab, view in TAB_VIEWS.items():
+            name, number = TAB_NAMES[view]
+            tabs.get_tab(tab).label = f"{name}: {self._views[view]} ({counts[view]}) [{number}]"
+
+    def _filter_choices(self, view: str) -> list[str]:
+        """The filters `f` cycles through; `all` is left out when watching everything."""
+        choices = list(CHOICES[view])
+        if view == "queue" and self.config.scope.is_all:
+            choices.remove("all")
+        return choices
+
+    async def action_cycle_filter(self) -> None:
+        """Switch the current tab to its next filter until the TUI quits, and refetch it."""
+        view = TAB_VIEWS[self._tab]
+        choices = self._filter_choices(view)
+        current = self._views[view]
+        position = choices.index(current) if current in choices else -1
+        self._views[view] = choices[(position + 1) % len(choices)]
+        name, _ = TAB_NAMES[view]
+        self._status_line.update(f"{name} filter: {self._views[view]} (until you quit)")
+        if view == "queue":
+            await self._refresh_queue()
+        elif view == "mine":
+            await self._refresh_mine(quiet=True)
+        else:
+            await self._refresh_notes(quiet=True)
 
     def _show_summary(self) -> None:
         if self._on_notes:
@@ -590,7 +653,7 @@ class ReviewQueueApp(App[None]):
         )
         hint = "" if self.config.agents else f" · no agents configured in {self.config.path}"
         self._status_line.update(
-            f"{actionable} actionable · {len(self._candidates)} current request(s){hint}"
+            f"{actionable} actionable · {len(self._candidates)} open PR(s){hint} · f: filter"
         )
 
     def on_data_table_row_highlighted(self, _: DataTable.RowHighlighted) -> None:

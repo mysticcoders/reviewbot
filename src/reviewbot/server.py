@@ -234,9 +234,19 @@ class _Handler(BaseHTTPRequestHandler):
             if not (self._token_ok(self._bearer()) or self._token_ok(self._cookie())):
                 self._json(HTTPStatus.UNAUTHORIZED, {"error": "token required"})
                 return
-            refresh = parse_qs(parts.query).get("refresh") == ["1"]
-            self.server.board.refresh(force=refresh)
-            self._json(HTTPStatus.OK, self.server.board.snapshot())
+            query = parse_qs(parts.query)
+            wanted = {
+                view: (query.get(param) or [None])[0]
+                for param, view in (("open", "queue"), ("mine", "mine"),
+                                    ("notifications", "notifications"))
+            }
+            try:
+                self.server.board.refresh(force=query.get("refresh") == ["1"], wanted=wanted)
+                snapshot = self.server.board.snapshot(wanted)
+            except OpenError as error:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._json(HTTPStatus.OK, snapshot)
         elif parts.path == "/mcp":
             self._send(HTTPStatus.METHOD_NOT_ALLOWED, b"POST only\n", headers={"Allow": "POST"})
         else:

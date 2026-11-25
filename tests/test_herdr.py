@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from reviewbot import herdr
-from reviewbot.config import Agent, load
+from reviewbot.config import FILTERS_TABLE, Agent, load
 from reviewbot.github import QueueStatus, ReviewCandidate
 from reviewbot.herdr import (
     AGENT_NAME_MAX,
@@ -79,7 +79,7 @@ def test_launch_review_uses_each_agents_kind_args_and_prompt(tmp_path, monkeypat
         'watch = ["*"]\nmultiplexer = "herdr"\nprompt = "review.md"\n'
         '[[agents]]\nname = "claude"\nkind = "claude"\nargs = ["--model", "opus"]\n'
         '[[agents]]\nname = "codex"\nkind = "codex"\nprompt = "codex.md"\n'
-        '[[groups]]\nname = "pair"\nagents = ["claude", "codex"]\n',
+        '[[groups]]\nname = "pair"\nagents = ["claude", "codex"]\n' + FILTERS_TABLE,
         encoding="utf-8",
     )
     config = load(config_path)
@@ -109,7 +109,8 @@ def test_launch_review_uses_each_agents_kind_args_and_prompt(tmp_path, monkeypat
 def test_launch_review_fails_before_checkout_when_prompt_missing(tmp_path, monkeypatch):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        'watch = ["*"]\nmultiplexer = "herdr"\nprompt = "missing.md"\n[[agents]]\nname = "a"\nkind = "claude"\n',
+        'watch = ["*"]\nmultiplexer = "herdr"\nprompt = "missing.md"\n[[agents]]\nname = "a"\nkind = "claude"\n'
+        + FILTERS_TABLE,
         encoding="utf-8",
     )
     monkeypatch.setattr(

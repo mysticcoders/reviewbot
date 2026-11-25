@@ -5,7 +5,7 @@ ReviewBot can serve the two queues and your unread notifications in two ways:
 - as a web page, where each PR is a link that opens in a browser that is signed in to GitHub;
 - as an MCP server, so an agent can list your queue and notifications, open a PR in that browser for you, and mark notifications read.
 
-The web page has the same three tabs as the TUI: **Review requests**, **My PRs** and **Notifications**, each with a count. Press `1`, `2` or `3` to switch, or link straight to one with `#queue`, `#mine` or `#notes` at the end of the address. On the **Notifications** tab, opening a notification or pressing **Mark read** marks it read on GitHub.
+The web page has the same three tabs as the TUI: **Open PRs**, **My PRs** and **Notifications**, each with a count. Press `1`, `2` or `3` to switch, or link straight to one with `#queue`, `#mine` or `#notes` at the end of the address. Each tab has a **Filter** menu that starts at the configured filter; a choice there lasts for that page and is kept in its address (`?open=all`), so the link reopens it. On the **Notifications** tab, opening a notification or pressing **Mark read** marks it read on GitHub.
 
 For how access is limited, read [The security model of `serve`](../explanation/security-model.md).
 
@@ -37,7 +37,7 @@ Run it in the foreground:
 reviewbot serve
 ```
 
-This serves the dashboard at `/`, JSON at `/api/prs` (including `notifications`), and MCP at `/mcp`. Press `ctrl+c` to stop it.
+This serves the dashboard at `/`, JSON at `/api/prs` (including `notifications`; add `?open=`, `?mine=` or `?notifications=` for another filter), and MCP at `/mcp`. Press `ctrl+c` to stop it.
 
 Or let the TUI host it:
 

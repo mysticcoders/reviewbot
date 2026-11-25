@@ -9,7 +9,7 @@ import time
 import pytest
 
 from reviewbot.board import Board, OpenError
-from reviewbot.config import ConfigError, load
+from reviewbot.config import FILTERS_TABLE, ConfigError, load
 from reviewbot.github import (
     AuthoredPR,
     AuthoredStatus,
@@ -26,7 +26,9 @@ SERVE = '[serve]\nport = 0\nbind = "localhost"\nbrowser = "Google Chrome"\n'
 
 def write(tmp_path, extra=SERVE):
     path = tmp_path / "config.toml"
-    path.write_text('watch = ["acme"]\nmultiplexer = "rex"\n' + extra, encoding="utf-8")
+    path.write_text(
+        'watch = ["acme"]\nmultiplexer = "rex"\n' + extra + FILTERS_TABLE, encoding="utf-8"
+    )
     return load(path)
 
 
@@ -278,8 +280,8 @@ def test_http_mcp_lists_tools_and_queue(dashboard):
     _, data = mcp(dashboard, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     names = [tool["name"] for tool in json.loads(data)["result"]["tools"]]
     assert names == [
-        "list_review_queue", "list_my_prs", "list_notifications", "mark_notification_read",
-        "open_pr",
+        "list_open_prs", "list_review_queue", "list_my_prs", "list_notifications",
+        "mark_notification_read", "open_pr",
     ]
     _, data = mcp(dashboard, {
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",

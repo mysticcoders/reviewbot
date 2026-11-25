@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from reviewbot import rex
-from reviewbot.config import load
+from reviewbot.config import FILTERS_TABLE, load
 from reviewbot.github import QueueStatus, ReviewCandidate
 from reviewbot.launch import LaunchError
 
@@ -75,7 +75,7 @@ def rex_config(tmp_path: Path, extra: str = ""):
     path.write_text(
         'watch = ["*"]\nmultiplexer = "rex"\nprompt = "p.md"\n' + extra
         + '[[agents]]\nname = "claude"\nkind = "claude"\ncommand = "claude"\n'
-        'args = ["--model", "opus"]\n',
+        'args = ["--model", "opus"]\n' + FILTERS_TABLE,
         encoding="utf-8",
     )
     return load(path)

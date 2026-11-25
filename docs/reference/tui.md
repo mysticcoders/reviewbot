@@ -4,7 +4,8 @@ Start the TUI with `reviewbot tui`.
 
 | Key | Action |
 | --- | --- |
-| `1` / `2` / `3` | Switch between **Review requests**, **My PRs** and **Notifications**. |
+| `1` / `2` / `3` | Switch between **Open PRs**, **My PRs** and **Notifications**. |
+| `f` | Change the current tab's filter, until you quit. The tab title shows the filter and the count, such as `Open PRs: all (14)`. See [Filters](configuration.md#filters). |
 | arrows | Select a PR. |
 | `r` | Refresh the current tab. |
 | `q` | Quit. |
@@ -23,6 +24,6 @@ For the statuses in each tab, see [Queue statuses](statuses.md).
 
 The **Notifications** tab lists your unread GitHub notifications about PRs and issues in the repositories you watch, newest first. Its title shows how many there are. Notifications about releases, CI, security alerts and other kinds are left out. The TUI fetches them when it starts, every two minutes after that, and when you press `r` on the tab.
 
-In **Review requests** and **My PRs**, a `*` after the PR number means that PR has an unread notification, and the detail pane lists why, such as `comment` or `review requested`.
+In **Open PRs** and **My PRs**, a `*` after the PR number means that PR has an unread notification, and the detail pane lists why, such as `comment` or `review requested`.
 
 Marking a notification read changes only your own read state on GitHub. Nothing is posted.

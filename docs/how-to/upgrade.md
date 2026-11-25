@@ -19,6 +19,31 @@ reviewbot doctor
 
 A release can make a new config setting necessary. Then the old config does not load, and the error names the missing setting. At a terminal, `reviewbot doctor` offers to add it for you. Each such release has a section below.
 
+### Upgrade to 0.5
+
+0.5 adds filters for each view and makes the `[filters]` table required. A config from 0.4 or earlier does not load until you add it.
+
+1. Run `reviewbot doctor` at a terminal.
+2. Answer yes when it offers to add `[filters]`. It adds the table with the views as they were before, and keeps the old file as `config.toml.bak`.
+
+To make the change by hand, add this table at the end of `~/.config/reviewbot/config.toml`:
+
+```toml
+[filters]
+open = "requested"
+mine = "all"
+notifications = "all"
+notification_kinds = ["pr", "issue"]
+stale_days = 14
+```
+
+Other changes in 0.5:
+
+- The **Review requests** tab is now **Open PRs**. With `open = "requested"` it shows the same PRs as before.
+- **My PRs** also lists PRs assigned to you, with a **Role** column.
+- `f` is now a TUI key. An agent, group or combat with `key = "f"` must move to another key. The same goes for `3`, which 0.4 took for the Notifications tab.
+- The MCP tool `list_review_queue` is now `list_open_prs`. The old name still works.
+
 ### Keep reviews for retrospectives
 
 Configs written before `init` turned saving on have no `[output]` table, and prompts installed before the **Recurring patterns** section existed don't ask for it. Neither changes on upgrade. To adopt both:

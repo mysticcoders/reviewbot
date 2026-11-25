@@ -12,6 +12,13 @@ prompt = "prompts/review.md"        # shared prompt for agents without their own
 # herdr_workspace = "workspace-id"  # Herdr: force new tabs into one workspace
 # rex_session = "reviews"           # Rex: open tabs in this session
 
+[filters]                           # required; see Filters below
+open = "requested"
+mine = "all"
+notifications = "all"
+notification_kinds = ["pr", "issue"]
+stale_days = 14
+
 [[agents]]
 name = "claude"
 kind = "claude"
@@ -57,7 +64,7 @@ Each `[[agents]]` table defines one agent.
 | `name` | yes | 1–16 characters: lowercase letters, digits, `-` or `_`. Unique across agents, groups and combats. Used with `--agent` and in tab names. |
 | `kind` | yes | The kind of agent. ReviewBot records it with saved reviews. With Herdr, it goes to `herdr agent start --kind`, and `doctor` looks for an executable of that name. Run `herdr agent start --help` for the supported kinds. |
 | `command` | with Rex | The program that Rex runs in the tab, and the executable that `doctor` looks for. Herdr ignores it. |
-| `key` | no | One letter or digit for the TUI. `q`, `r`, `o`, `1`, `2`, `3`, `a` and `e` belong to the TUI. Keys must not repeat. |
+| `key` | no | One letter or digit for the TUI. `q`, `r`, `o`, `1`, `2`, `3`, `a`, `e` and `f` belong to the TUI. Keys must not repeat. |
 | `args` | no | Extra arguments for the agent's command line. |
 | `prompt` | no | This agent's prompt file. Each agent needs a prompt: its own, or the top-level `prompt`. |
 
@@ -106,6 +113,48 @@ See [Serve the dashboard and MCP endpoint](../how-to/serve-the-dashboard.md).
 | `bind` | yes | `"localhost"`, `"tailnet"` or `"tailscale-node"` (macOS only). |
 | `browser` | yes | On macOS, an app name for `open -a`. On Linux, a command that ReviewBot runs with the URL. |
 | `hostname` | with `tailscale-node` | The device name on the tailnet: 1–63 lowercase letters, digits or `-`, not starting or ending with `-`. Not allowed with the other `bind` values. |
+
+## Filters
+
+The `[filters]` table sets what each view shows inside the watched repositories. It is required, and every key in it is required.
+
+| Key | Value |
+| --- | --- |
+| `open` | The **Open PRs** tab: `requested`, `involves`, `all` or `stale`. |
+| `mine` | The **My PRs** tab: `all`, `ready`, `needs-action` or `stale`. |
+| `notifications` | The **Notifications** tab: `all`, `participating` or `reviews`. |
+| `notification_kinds` | Which notifications to show: one or more of `pr` and `issue`. |
+| `stale_days` | How many days without activity make a PR `stale`. A whole number, 1 or more. |
+
+**Open PRs**
+
+| `open` | Shows |
+| --- | --- |
+| `requested` | PRs that request your review, directly or through a team. |
+| `involves` | PRs you were requested on, reviewed, commented on, or were mentioned in. Your own PRs are left out. |
+| `all` | Every open PR in the watched repositories, except your own. Not available with `watch = ["*"]`, where it would search all of GitHub. |
+| `stale` | PRs that request your review, with no activity for `stale_days`. |
+
+With `involves` and `all`, the **Request** column says `none` for PRs that do not ask for your review. You can launch a review of any `ready` or `updated` row.
+
+**My PRs** lists open PRs you authored or are assigned to. The **Role** column says which.
+
+| `mine` | Shows |
+| --- | --- |
+| `all` | Every one. |
+| `ready` | Drafts left out. |
+| `needs-action` | Changes requested, failing checks, conflicts, no reviewers, or reviewers to ask again. |
+| `stale` | No activity for `stale_days`. |
+
+**Notifications**
+
+| `notifications` | Shows |
+| --- | --- |
+| `all` | Every unread notification of the kinds in `notification_kinds`. |
+| `participating` | Only threads you take part in or were mentioned in. |
+| `reviews` | Only review requests and mentions. |
+
+The config is the only lasting source of these filters. In the TUI, `f` changes the current tab's filter until you quit. On the dashboard, each tab's **Filter** menu changes it for that page. Through MCP, each list tool takes a `filter` argument.
 
 ## Checkouts
 

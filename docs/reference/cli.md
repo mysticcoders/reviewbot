@@ -9,12 +9,12 @@ Run `reviewbot --help`, or `reviewbot <command> --help`, for every option.
 | `reviewbot init` | Writes the config and the prompt templates. See the [tutorial](../tutorial/first-review.md). |
 | `reviewbot doctor` | Checks the tools, the config and the prompts. At a terminal, it offers to add missing settings. |
 | `reviewbot tui` | Opens the TUI. See [TUI keys](tui.md). |
-| `reviewbot status` | Prints the review requests as a table. |
-| `reviewbot mine` | Prints your open PRs as a table. |
+| `reviewbot status` | Prints the Open PRs as a table, with the `open` filter, or `--filter`. |
+| `reviewbot mine` | Prints the PRs you authored or are assigned to, with the `mine` filter, or `--filter`. |
 | `reviewbot agents` | Lists the configured agents, groups, combats and keys. |
 | `reviewbot runs` | Lists background runs and their progress. |
-| `reviewbot next` | Shows the most recent actionable review request. |
-| `reviewbot launch <pr> --agent <name>` | Launches a review of one PR. |
+| `reviewbot next` | Shows the most recent actionable PR that requests your review, whatever the `open` filter. |
+| `reviewbot launch <pr> --agent <name>` | Launches a review of one open PR by someone else, requested of you or not. |
 | `reviewbot serve` | Serves the dashboard and the HTTP MCP endpoint. |
 | `reviewbot token` | Prints the token, the dashboard login URL and the MCP setup. |
 | `reviewbot mcp` | Runs the MCP server over stdio. |
@@ -28,6 +28,8 @@ reviewbot next --agent claude             # show the request and offer to launch
 reviewbot next --agent pair --yes         # launch a group without asking
 reviewbot launch acme/api#422 --agent claude
 reviewbot launch https://github.com/acme/api/pull/422 --agent duel
+reviewbot status --filter all             # every open PR in the watched repositories
+reviewbot mine --filter needs-action      # your PRs that need something from you
 reviewbot serve --bind tailnet --port 9000
 reviewbot token --bind tailnet --port 9000
 reviewbot token --rotate                  # replace the token; clients must update
@@ -41,4 +43,4 @@ reviewbot token --rotate                  # replace the token; clients must upda
 - `tailnet login` and `tailnet logout` take `--hostname`.
 - `tui --serve` starts the dashboard with the TUI, and does not open the browser.
 
-`launch` looks the PR up in the review requests of that repository. So it works whatever the configured `watch` list is.
+`launch` looks the PR up among the open PRs of that repository. So it works whatever the configured `watch` list and filters are.

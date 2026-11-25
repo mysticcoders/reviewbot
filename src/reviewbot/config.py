@@ -10,7 +10,7 @@ from pathlib import Path
 CONFIG_DIR = Path("~/.config/reviewbot").expanduser()
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 
-RESERVED_KEYS = frozenset("qro123ae")
+RESERVED_KEYS = frozenset("qro123aef")
 NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,15}")
 KEY_PATTERN = re.compile(r"[A-Za-z0-9]")
 MULTIPLEXERS = {"herdr": "Herdr", "rex": "Rex"}
@@ -172,11 +172,42 @@ class Serve:
     hostname: str | None = None
 
 
+OPEN_FILTERS = ("requested", "involves", "all", "stale")
+MINE_FILTERS = ("all", "ready", "needs-action", "stale")
+NOTIFICATION_FILTERS = ("all", "participating", "reviews")
+NOTIFICATION_KINDS = ("pr", "issue")
+FILTERS_TABLE = (
+    "[filters]\n"
+    'open = "requested"          # requested | involves | all | stale\n'
+    'mine = "all"                # all | ready | needs-action | stale\n'
+    'notifications = "all"       # all | participating | reviews\n'
+    'notification_kinds = ["pr", "issue"]\n'
+    "stale_days = 14\n"
+)
+
+
+@dataclass(frozen=True)
+class Filters:
+    """What each view shows inside the watched repositories, as set in `[filters]`.
+
+    `open` narrows the Open PRs tab, `mine` the My PRs tab, and `notifications` the
+    Notifications tab, which shows only `notification_kinds`. `stale` means no activity
+    for `stale_days`. The TUI and dashboard can change a filter for one session.
+    """
+
+    open: str
+    mine: str
+    notifications: str
+    notification_kinds: tuple[str, ...]
+    stale_days: int
+
+
 @dataclass(frozen=True)
 class Config:
     scope: Scope
     work_dir: Path
     multiplexer: str
+    filters: Filters
     herdr_workspace: str | None
     rex_session: str | None = None
     agents: tuple[Agent, ...] = ()
@@ -437,6 +468,47 @@ def _node_name(table: dict, bind: str) -> str | None:
     return hostname
 
 
+def _choice(table: dict, key: str, choices: tuple[str, ...]) -> str:
+    value = table.get(key)
+    if value not in choices:
+        raise ConfigError(
+            f"`[filters]` `{key}` must be one of {', '.join(choices)}"
+            + (f", not `{value}`." if value is not None else "; it is missing.")
+        )
+    return value
+
+
+def _filters(raw: dict) -> Filters:
+    """Parse the required `[filters]` table; every key must be written out."""
+    table = raw.get("filters")
+    if table is None:
+        raise ConfigError(
+            "`[filters]` is missing. It sets what each view shows. Run `reviewbot doctor` "
+            "to add it, or add this table:\n\n" + FILTERS_TABLE
+        )
+    if not isinstance(table, dict):
+        raise ConfigError("`[filters]` must be a table.")
+    kinds = table.get("notification_kinds")
+    if (
+        not isinstance(kinds, list) or not kinds
+        or any(kind not in NOTIFICATION_KINDS for kind in kinds)
+    ):
+        raise ConfigError(
+            "`[filters]` `notification_kinds` must list one or more of "
+            f"{', '.join(NOTIFICATION_KINDS)}."
+        )
+    days = table.get("stale_days")
+    if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+        raise ConfigError("`[filters]` `stale_days` must be a whole number of days, 1 or more.")
+    return Filters(
+        open=_choice(table, "open", OPEN_FILTERS),
+        mine=_choice(table, "mine", MINE_FILTERS),
+        notifications=_choice(table, "notifications", NOTIFICATION_FILTERS),
+        notification_kinds=tuple(dict.fromkeys(kinds)),
+        stale_days=days,
+    )
+
+
 def load(path: Path | None = None) -> Config:
     path = path or CONFIG_PATH
     if not path.exists():
@@ -454,6 +526,7 @@ def load(path: Path | None = None) -> Config:
         scope=scope,
         work_dir=_expand(raw.get("work_dir", "~/reviewbot-workspaces"), base),
         multiplexer=multiplexer,
+        filters=_filters(raw),
         herdr_workspace=raw.get("herdr_workspace"),
         rex_session=raw.get("rex_session"),
         agents=agents,
@@ -488,6 +561,15 @@ def add_multiplexer(text: str, multiplexer: str) -> str:
     if index == len(lines) and lines and not lines[-1].endswith("\n"):
         lines[-1] += "\n"
     return "".join([*lines[:index], entry, *lines[index:]])
+
+
+def add_filters(text: str) -> str:
+    """Append a `[filters]` table set to what earlier versions showed."""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return (
+        text + "\n# What each view shows. See docs/reference/configuration.md.\n" + FILTERS_TABLE
+    )
 
 
 def agents_missing_command(raw: dict) -> list[tuple[str, str]]:

@@ -8,48 +8,77 @@ from collections.abc import Callable
 from typing import Any, TextIO
 
 from . import __version__
-from .board import Board, OpenError, open_in_browser
+from .board import CHOICES, Board, OpenError, open_in_browser
 from .github import GhError
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 INSTRUCTIONS = (
-    "ReviewBot lists the GitHub pull requests waiting on the user's review, the user's own "
-    "open pull requests, and the user's unread GitHub notifications about pull requests and "
-    "issues in watched repositories. Use open_pr to open one in the user's signed-in browser, "
+    "ReviewBot lists open pull requests in the watched repositories (by default those waiting "
+    "on the user's review), the pull requests the user authored or is assigned to, and the "
+    "user's unread GitHub notifications about pull requests and issues. Each list takes a "
+    "`filter`; without one, it uses the filter the user configured. Use open_pr to open one in the user's signed-in browser, "
     "and mark_notification_read once the user has dealt with a notification."
 )
 
-TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "list_review_queue",
-        "description": (
-            "List open pull requests requesting the user's review, with status (ready, updated, "
-            "reviewed, changes-requested, draft, or in-progress when a review tab is open), "
-            "checks, author, and URL."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "refresh": {"type": "boolean", "description": "Fetch fresh data from GitHub."},
-                "actionable_only": {
-                    "type": "boolean",
-                    "description": "Only PRs that are ready or updated and not already under review.",
-                },
+def _filter_property(view: str, meanings: str) -> dict[str, Any]:
+    return {
+        "type": "string", "enum": list(CHOICES[view]),
+        "description": f"Which ones to list: {meanings}. Omit for the user's configured filter.",
+    }
+
+
+OPEN_PRS_TOOL: dict[str, Any] = {
+    "name": "list_open_prs",
+    "description": (
+        "List open pull requests in the watched repositories, with status (ready, updated, "
+        "reviewed, changes-requested, draft, or in-progress when a review tab is open), "
+        "checks, author, how the user's review was requested (direct, team:<slug>, or none), "
+        "and URL."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "filter": _filter_property(
+                "queue",
+                "requested (asking for the user's review), involves (any PR the user is part "
+                "of), all (every open PR except the user's own), stale (requested with no "
+                "recent activity)",
+            ),
+            "refresh": {"type": "boolean", "description": "Fetch fresh data from GitHub."},
+            "actionable_only": {
+                "type": "boolean",
+                "description": "Only PRs that are ready or updated and not already under review.",
             },
-            "additionalProperties": False,
         },
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+        "additionalProperties": False,
+    },
+    "annotations": {"readOnlyHint": True, "openWorldHint": True},
+}
+
+TOOLS: list[dict[str, Any]] = [
+    OPEN_PRS_TOOL,
+    {
+        **OPEN_PRS_TOOL,
+        "name": "list_review_queue",
+        "description": "Same as list_open_prs; kept for clients that use the older name.",
     },
     {
         "name": "list_my_prs",
         "description": (
-            "List the user's own open pull requests with status, checks, mergeability, reviewer "
-            "states, and which reviewers need a re-request."
+            "List open pull requests the user authored or is assigned to (`roles`), with "
+            "status, checks, mergeability, reviewer states, and which reviewers need a "
+            "re-request."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
+                "filter": _filter_property(
+                    "mine",
+                    "all, ready (no drafts), needs-action (changes requested, failing checks, "
+                    "conflicts, no reviewers, or reviewers to ask again), stale (no recent "
+                    "activity)",
+                ),
                 "refresh": {"type": "boolean", "description": "Fetch fresh data from GitHub."},
             },
             "additionalProperties": False,
@@ -67,6 +96,11 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "filter": _filter_property(
+                    "notifications",
+                    "all, participating (threads the user takes part in or was mentioned "
+                    "in), reviews (review requests and mentions)",
+                ),
                 "refresh": {"type": "boolean", "description": "Fetch fresh data from GitHub."},
             },
             "additionalProperties": False,
@@ -155,30 +189,25 @@ class McpServer:
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
             return _error(request_id, -32602, "arguments must be an object")
-        if name == "list_review_queue":
-            self.board.refresh(force=bool(arguments.get("refresh")))
-            snapshot = self.board.snapshot()
-            queue = snapshot["queue"]
-            if arguments.get("actionable_only"):
-                queue = [item for item in queue if item["actionable"]]
-            return _result(request_id, _tool_result(
-                {"scope": snapshot["scope"], "queue": queue,
-                 "error": snapshot["errors"].get("queue")},
-            ))
-        if name == "list_my_prs":
-            self.board.refresh(force=bool(arguments.get("refresh")))
-            snapshot = self.board.snapshot()
-            return _result(request_id, _tool_result(
-                {"scope": snapshot["scope"], "mine": snapshot["mine"],
-                 "error": snapshot["errors"].get("mine")},
-            ))
-        if name == "list_notifications":
-            self.board.refresh(force=bool(arguments.get("refresh")))
-            snapshot = self.board.snapshot()
-            return _result(request_id, _tool_result(
-                {"scope": snapshot["scope"], "notifications": snapshot["notifications"],
-                 "error": snapshot["errors"].get("notifications")},
-            ))
+        lists = {
+            "list_open_prs": "queue", "list_review_queue": "queue",
+            "list_my_prs": "mine", "list_notifications": "notifications",
+        }
+        if name in lists:
+            view = lists[name]
+            try:
+                wanted = {view: arguments.get("filter")}
+                self.board.refresh(force=bool(arguments.get("refresh")), wanted=wanted)
+                snapshot = self.board.snapshot(wanted)
+            except OpenError as error:
+                return _result(request_id, _tool_error(str(error)))
+            items = snapshot[view]
+            if view == "queue" and arguments.get("actionable_only"):
+                items = [item for item in items if item["actionable"]]
+            return _result(request_id, _tool_result({
+                "scope": snapshot["scope"], "filter": snapshot["filters"][view],
+                view: items, "error": snapshot["errors"].get(view),
+            }))
         if name == "mark_notification_read":
             thread_id = arguments.get("id")
             if not isinstance(thread_id, str) or not thread_id.strip():

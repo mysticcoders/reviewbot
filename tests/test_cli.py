@@ -112,9 +112,9 @@ def doctor(tmp_path, monkeypatch, stdin: str):
 
 
 def test_doctor_adds_a_missing_herdr_multiplexer_and_keeps_a_backup(tmp_path, monkeypatch):
-    result = doctor(tmp_path, monkeypatch, "y\nherdr\ny\n")
+    result = doctor(tmp_path, monkeypatch, "y\nherdr\n")
     assert "has no `multiplexer`" in result.output
-    assert "has no `[filters]` table" in result.output
+    assert "added a [filters] table" in result.output
     assert "updated" in result.output
     text = (tmp_path / "config.toml").read_text(encoding="utf-8")
     assert text.index('multiplexer = "herdr"') < text.index("# Review agents.")
@@ -128,7 +128,7 @@ def test_doctor_adds_a_missing_herdr_multiplexer_and_keeps_a_backup(tmp_path, mo
 
 
 def test_doctor_switching_to_rex_adds_each_agents_command(tmp_path, monkeypatch):
-    result = doctor(tmp_path, monkeypatch, "y\nrex\ny\ny\n\n/opt/bin/codex\n")
+    result = doctor(tmp_path, monkeypatch, "y\nrex\ny\n\n/opt/bin/codex\n")
     assert "missing for: claude, codex" in result.output
     config = cfg.load(tmp_path / "config.toml")
     assert config.multiplexer == "rex"

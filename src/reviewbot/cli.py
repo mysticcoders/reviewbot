@@ -255,7 +255,7 @@ def _interactive() -> bool:
 
 
 def _repair_config(path: Path) -> None:
-    """Offer to add what newer versions require: `multiplexer`, `[filters]`, and Rex `command`s.
+    """Offer to add what newer versions require: `multiplexer`, and each agent's Rex `command`.
 
     Only the missing lines are added, so comments and layout are kept; the previous file
     is saved beside it as config.toml.bak.
@@ -275,10 +275,6 @@ def _repair_config(path: Path) -> None:
                 type=click.Choice(list(cfg.MULTIPLEXERS)),
             )
             updated = cfg.add_multiplexer(updated, multiplexer)
-    if "filters" not in raw:
-        click.secho(f"{path} has no `[filters]` table, which this version requires.", fg="yellow")
-        if click.confirm("Add it with the views as they were before?", default=True):
-            updated = cfg.add_filters(updated)
     missing = cfg.agents_missing_command(raw) if multiplexer == "rex" else []
     if missing:
         names = ", ".join(name for name, _ in missing)

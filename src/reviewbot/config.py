@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -483,8 +484,8 @@ def _filters(raw: dict) -> Filters:
     table = raw.get("filters")
     if table is None:
         raise ConfigError(
-            "`[filters]` is missing. It sets what each view shows. Run `reviewbot doctor` "
-            "to add it, or add this table:\n\n" + FILTERS_TABLE
+            "`[filters]` is missing, and ReviewBot could not add it to the config. It sets "
+            "what each view shows. Add this table:\n\n" + FILTERS_TABLE
         )
     if not isinstance(table, dict):
         raise ConfigError("`[filters]` must be a table.")
@@ -509,19 +510,46 @@ def _filters(raw: dict) -> Filters:
     )
 
 
+def _write_filters(path: Path, text: str) -> dict:
+    """Add the `[filters]` table to an otherwise valid config written before it existed.
+
+    It runs only after the rest of the config has loaded, so a broken config is left
+    alone. The table is written into the file, set to what earlier versions showed, so every
+    setting stays visible in the config. The previous file is kept beside it, with
+    `.before-0.5` added to its name.
+    If the file cannot be written, loading fails as it would without the table.
+    """
+    updated = add_filters(text)
+    try:
+        path.with_name(f"{path.name}.before-0.5").write_text(text, encoding="utf-8")
+        temporary = path.with_name(f"{path.name}.tmp")
+        temporary.write_text(updated, encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        return tomllib.loads(text)
+    sys.stderr.write(
+        f"reviewbot: added a [filters] table to {path}, set to show what earlier versions "
+        f"showed (previous file saved as {path.name}.before-0.5)\n"
+    )
+    return tomllib.loads(updated)
+
+
 def load(path: Path | None = None) -> Config:
     path = path or CONFIG_PATH
     if not path.exists():
         raise ConfigError(f"Config not found at {path}. Run `reviewbot init` to create it.")
     try:
-        with path.open("rb") as config_file:
-            raw = tomllib.load(config_file)
+        text = path.read_text(encoding="utf-8")
+        raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise ConfigError(f"{path}: {error}") from None
     base = path.parent
     scope = _scope(raw)
     multiplexer = _multiplexer(raw)
     agents, groups, combats = _agents(raw, base, multiplexer)
+    checkouts, output, serve = _checkouts(raw, base), _output(raw, base), _serve(raw)
+    if "filters" not in raw:
+        raw = _write_filters(path, text)
     return Config(
         scope=scope,
         work_dir=_expand(raw.get("work_dir", "~/reviewbot-workspaces"), base),
@@ -532,9 +560,9 @@ def load(path: Path | None = None) -> Config:
         agents=agents,
         groups=groups,
         combats=combats,
-        checkouts=_checkouts(raw, base),
-        output=_output(raw, base),
-        serve=_serve(raw),
+        checkouts=checkouts,
+        output=output,
+        serve=serve,
         path=path,
     )
 
@@ -568,7 +596,7 @@ def add_filters(text: str) -> str:
     if text and not text.endswith("\n"):
         text += "\n"
     return (
-        text + "\n# What each view shows. See docs/reference/configuration.md.\n" + FILTERS_TABLE
+        text + "\n# What each view shows. See https://github.com/mysticcoders/reviewbot/blob/main/docs/reference/configuration.md#filters\n" + FILTERS_TABLE
     )
 
 

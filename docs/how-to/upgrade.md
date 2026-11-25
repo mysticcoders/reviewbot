@@ -21,12 +21,9 @@ A release can make a new config setting necessary. Then the old config does not 
 
 ### Upgrade to 0.5
 
-0.5 adds filters for each view and makes the `[filters]` table required. A config from 0.4 or earlier does not load until you add it.
+0.5 adds filters for each view and requires a `[filters]` table. You don't need to do anything: the first time 0.5 loads a config without the table, it adds it to the end of `config.toml`, set to show the views as they were before. It keeps the previous file as `config.toml.before-0.5`, and prints one line saying so. A config that fails to load for another reason is left alone until that is fixed.
 
-1. Run `reviewbot doctor` at a terminal.
-2. Answer yes when it offers to add `[filters]`. It adds the table with the views as they were before, and keeps the old file as `config.toml.bak`.
-
-To make the change by hand, add this table at the end of `~/.config/reviewbot/config.toml`:
+If ReviewBot cannot write the file, it stops with an error instead. Then add this table at the end of `~/.config/reviewbot/config.toml` by hand:
 
 ```toml
 [filters]

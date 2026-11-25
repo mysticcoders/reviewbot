@@ -116,7 +116,7 @@ See [Serve the dashboard and MCP endpoint](../how-to/serve-the-dashboard.md).
 
 ## Filters
 
-The `[filters]` table sets what each view shows inside the watched repositories. It is required, and every key in it is required.
+The `[filters]` table sets what each view shows inside the watched repositories. It is required, and every key in it is required. A config from before 0.5 has no `[filters]`: ReviewBot adds the table to the file the first time it loads it, set to show the views as they were before, and keeps the previous file as `config.toml.before-0.5`.
 
 | Key | Value |
 | --- | --- |

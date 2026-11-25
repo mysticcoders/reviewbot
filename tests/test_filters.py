@@ -22,9 +22,39 @@ def write(tmp_path: Path, filters: str | None = FILTERS_TABLE) -> Path:
     return path
 
 
-def test_filters_table_is_required_and_read(tmp_path):
-    with pytest.raises(ConfigError, match=r"`\[filters\]` is missing"):
-        load(write(tmp_path, None))
+def test_a_missing_filters_table_is_written_into_the_config(tmp_path, capsys):
+    path = write(tmp_path, None)
+    filters = load(path).filters
+    assert (filters.open, filters.mine, filters.notifications) == ("requested", "all", "all")
+    assert "[filters]" in path.read_text(encoding="utf-8")
+    assert (tmp_path / "config.toml.before-0.5").read_text(encoding="utf-8") == BASE
+    assert "added a [filters] table" in capsys.readouterr().err
+    load(path)
+    assert capsys.readouterr().err == ""
+
+
+def test_a_broken_config_is_not_touched(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('watch = ["acme"]\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="`multiplexer` is missing"):
+        load(path)
+    assert path.read_text(encoding="utf-8") == 'watch = ["acme"]\n'
+    assert not (tmp_path / "config.toml.before-0.5").exists()
+
+
+def test_an_unwritable_config_without_filters_fails_to_load(tmp_path):
+    path = write(tmp_path, None)
+    path.chmod(0o444)
+    tmp_path.chmod(0o555)
+    try:
+        with pytest.raises(ConfigError, match="could not add it"):
+            load(path)
+    finally:
+        tmp_path.chmod(0o755)
+        path.chmod(0o644)
+
+
+def test_filters_table_is_read(tmp_path):
     filters = load(write(tmp_path)).filters
     assert (filters.open, filters.mine, filters.notifications) == ("requested", "all", "all")
     assert filters.notification_kinds == ("pr", "issue")

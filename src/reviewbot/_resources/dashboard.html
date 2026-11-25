@@ -343,16 +343,34 @@ for (const tab of Object.keys(FILTER_PARAMS)) {
   });
 }
 
+let latestLoad = 0;
+let loading = false;
+
+function clearFilterParams() {
+  for (const tab of Object.keys(chosenFilters)) delete chosenFilters[tab];
+  history.replaceState(null, "", `${location.pathname}${location.hash}`);
+}
+
 async function load(refresh) {
   const button = document.getElementById("refresh");
+  const ticket = ++latestLoad;
+  loading = true;
+  const current = () => ticket === latestLoad;
   button.disabled = true;
   try {
     const response = await fetch(`/api/prs${filterQuery(refresh)}`, { credentials: "same-origin" });
+    if (!current()) return;
     if (response.status === 401) {
       document.getElementById("meta").textContent = "Session expired. Reopen the URL from `reviewbot token`.";
       return;
     }
     const data = await response.json();
+    if (!current()) return;
+    if (response.status === 400 && Object.keys(chosenFilters).length) {
+      clearFilterParams();
+      load(refresh);
+      return;
+    }
     if (!response.ok) {
       document.getElementById("meta").textContent = data.error || `ReviewBot answered ${response.status}`;
       return;
@@ -365,9 +383,12 @@ async function load(refresh) {
     const when = Number.isFinite(fetched) ? new Date(fetched * 1000).toLocaleTimeString() : "never";
     document.getElementById("meta").textContent = `${data.scope} · fetched ${when}`;
   } catch (error) {
-    document.getElementById("meta").textContent = `Could not reach ReviewBot: ${error}`;
+    if (current()) document.getElementById("meta").textContent = `Could not reach ReviewBot: ${error}`;
   } finally {
-    button.disabled = false;
+    if (current()) {
+      button.disabled = false;
+      loading = false;
+    }
   }
 }
 
@@ -409,7 +430,9 @@ showTab(location.hash.slice(1), false);
 
 document.getElementById("refresh").addEventListener("click", () => load(true));
 load(false);
-setInterval(() => load(false), POLL_MS);
+setInterval(() => {
+  if (!loading) load(false);
+}, POLL_MS);
 </script>
 </body>
 </html>

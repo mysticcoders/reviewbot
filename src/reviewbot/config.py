@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
+import os
 import re
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -177,6 +180,7 @@ OPEN_FILTERS = ("requested", "involves", "all", "stale")
 MINE_FILTERS = ("all", "ready", "needs-action", "stale")
 NOTIFICATION_FILTERS = ("all", "participating", "reviews")
 NOTIFICATION_KINDS = ("pr", "issue")
+MAX_STALE_DAYS = 3650
 FILTERS_TABLE = (
     "[filters]\n"
     'open = "requested"          # requested | involves | all | stale\n'
@@ -263,6 +267,13 @@ class Config:
 
 def _expand(value: str, base: Path) -> Path:
     return base / Path(value).expanduser()
+
+
+def _work_dir(raw: dict, base: Path) -> Path:
+    value = raw.get("work_dir", "~/reviewbot-workspaces")
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError("`work_dir` must be a directory path.")
+    return _expand(value, base)
 
 
 def _scope(raw: dict) -> Scope:
@@ -499,8 +510,10 @@ def _filters(raw: dict) -> Filters:
             f"{', '.join(NOTIFICATION_KINDS)}."
         )
     days = table.get("stale_days")
-    if not isinstance(days, int) or isinstance(days, bool) or days < 1:
-        raise ConfigError("`[filters]` `stale_days` must be a whole number of days, 1 or more.")
+    if not isinstance(days, int) or isinstance(days, bool) or not 1 <= days <= MAX_STALE_DAYS:
+        raise ConfigError(
+            f"`[filters]` `stale_days` must be a whole number of days from 1 to {MAX_STALE_DAYS}."
+        )
     return Filters(
         open=_choice(table, "open", OPEN_FILTERS),
         mine=_choice(table, "mine", MINE_FILTERS),
@@ -510,31 +523,69 @@ def _filters(raw: dict) -> Filters:
     )
 
 
-def _write_filters(path: Path, text: str) -> dict:
+def _write_filters(path: Path, text: str) -> bool:
     """Add the `[filters]` table to an otherwise valid config written before it existed.
 
     It runs only after the rest of the config has loaded, so a broken config is left
     alone. The table is written into the file, set to what earlier versions showed, so every
     setting stays visible in the config. The previous file is kept beside it, with
     `.before-0.5` added to its name.
-    If the file cannot be written, loading fails as it would without the table.
+
+    A symlinked config is updated at its target. ReviewBot processes take a lock on the
+    config while they do this. Both files are first staged as private temporary files
+    with the permissions the locked config has; only then is the config checked again,
+    and if it is a different file, has other permissions, or no longer holds what was
+    loaded, the staged files are discarded. Otherwise they are
+    moved into place at once. Returns whether the file
+    now differs from `text` (so the caller loads it again from the start), or False if
+    it could not be written.
     """
-    updated = add_filters(text)
+    target = path.resolve()
+    staged: list[str] = []
     try:
-        path.with_name(f"{path.name}.before-0.5").write_text(text, encoding="utf-8")
-        temporary = path.with_name(f"{path.name}.tmp")
-        temporary.write_text(updated, encoding="utf-8")
-        temporary.replace(path)
+        with open(target, "rb") as locked:
+            fcntl.flock(locked, fcntl.LOCK_EX)
+            source = os.fstat(locked.fileno())
+            mode = source.st_mode & 0o777
+            backup = _stage(target.with_name(f"{target.name}.before-0.5"), text, mode, staged)
+            updated = _stage(target, add_filters(text), mode, staged)
+            now = os.stat(target)
+            if (
+                (now.st_ino, now.st_dev, now.st_mode) != (source.st_ino, source.st_dev, source.st_mode)
+                or target.read_text(encoding="utf-8") != text
+            ):
+                return True
+            os.replace(backup, target.with_name(f"{target.name}.before-0.5"))
+            os.replace(updated, target)
     except OSError:
-        return tomllib.loads(text)
+        return False
+    finally:
+        for leftover in staged:
+            if os.path.exists(leftover):
+                os.unlink(leftover)
     sys.stderr.write(
-        f"reviewbot: added a [filters] table to {path}, set to show what earlier versions "
-        f"showed (previous file saved as {path.name}.before-0.5)\n"
+        f"reviewbot: added a [filters] table to {target}, set to show what earlier versions "
+        f"showed (previous file saved as {target.name}.before-0.5)\n"
     )
-    return tomllib.loads(updated)
+    return True
 
 
-def load(path: Path | None = None) -> Config:
+def _stage(path: Path, text: str, mode: int, staged: list[str]) -> str:
+    """Write `text` to a private temporary file beside `path`, ready to move into place."""
+    handle, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    staged.append(temporary)
+    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+        stream.write(text)
+    os.chmod(temporary, mode)
+    return temporary
+
+
+def load(path: Path | None = None, *, _attempts: int = 3) -> Config:
+    """Load and validate the config, adding a missing `[filters]` table to the file first.
+
+    When the table is added, or the file changes while it is being added, the config is
+    loaded again from the start, so every setting comes from the same version of the file.
+    """
     path = path or CONFIG_PATH
     if not path.exists():
         raise ConfigError(f"Config not found at {path}. Run `reviewbot init` to create it.")
@@ -548,11 +599,15 @@ def load(path: Path | None = None) -> Config:
     multiplexer = _multiplexer(raw)
     agents, groups, combats = _agents(raw, base, multiplexer)
     checkouts, output, serve = _checkouts(raw, base), _output(raw, base), _serve(raw)
-    if "filters" not in raw:
-        raw = _write_filters(path, text)
+    work_dir = _work_dir(raw, base)
+    for key in ("herdr_workspace", "rex_session"):
+        if raw.get(key) is not None and not isinstance(raw[key], str):
+            raise ConfigError(f"`{key}` must be a string.")
+    if "filters" not in raw and _attempts > 0 and _write_filters(path, text):
+        return load(path, _attempts=_attempts - 1)
     return Config(
         scope=scope,
-        work_dir=_expand(raw.get("work_dir", "~/reviewbot-workspaces"), base),
+        work_dir=work_dir,
         multiplexer=multiplexer,
         filters=_filters(raw),
         herdr_workspace=raw.get("herdr_workspace"),

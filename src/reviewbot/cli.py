@@ -19,7 +19,7 @@ from rich.table import Table
 
 from . import __version__
 from . import config as cfg
-from .github import GhError, ReviewCandidate, my_prs, open_prs
+from .github import GhError, ReviewCandidate, my_prs, one_pr, open_prs
 from .launch import LaunchError
 from .multiplexer import active_review_keys
 from .run import collects, execute, launch_review, list_runs
@@ -497,11 +497,10 @@ def launch_command(target: str, agent: str) -> None:
         raise click.ClickException(f"{target} is not OWNER/REPO#NUMBER or a PR URL")
     config = _load((repo,))
     _require_agent(config, agent)
-    candidate = next(
-        (item for item in _queue(config, "all") if item.key.lower() == normalized.lower()), None,
-    )
-    if candidate is None:
-        raise click.ClickException(f"{target} is not an open PR by someone else in {repo}")
+    try:
+        candidate = asyncio.run(one_pr(repo, int(number)))
+    except (GhError, OSError) as error:
+        raise click.ClickException(str(error)) from None
     _print_candidate(candidate)
     _do_launch(config, candidate, agent)
 

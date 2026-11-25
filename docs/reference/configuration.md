@@ -124,7 +124,7 @@ The `[filters]` table sets what each view shows inside the watched repositories.
 | `mine` | The **My PRs** tab: `all`, `ready`, `needs-action` or `stale`. |
 | `notifications` | The **Notifications** tab: `all`, `participating` or `reviews`. |
 | `notification_kinds` | Which notifications to show: one or more of `pr` and `issue`. |
-| `stale_days` | How many days without activity make a PR `stale`. A whole number, 1 or more. |
+| `stale_days` | How many days without activity make a PR `stale`. A whole number from 1 to 3650. |
 
 **Open PRs**
 

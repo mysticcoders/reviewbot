@@ -69,6 +69,7 @@ def test_filters_table_is_read(tmp_path):
     ("notification_kinds = []", "`notification_kinds` must list"),
     ("stale_days = 0", "`stale_days` must be a whole number"),
     ("stale_days = true", "`stale_days` must be a whole number"),
+    ("stale_days = 1000000", "`stale_days` must be a whole number of days from 1 to 3650"),
 ])
 def test_bad_filter_values_are_refused(tmp_path, line, message):
     key = line.split(" = ")[0]
@@ -383,3 +384,415 @@ def test_tui_f_cycles_the_current_tabs_filter(monkeypatch, tmp_path):
 def test_stale_cutoff_is_a_date_in_the_past():
     cutoff = stale_cutoff(14)
     assert len(cutoff) == 10 and cutoff < time.strftime("%Y-%m-%d")
+
+
+def test_automatic_filters_keep_permissions_and_follow_a_symlink(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    target = write(real, None)
+    target.chmod(0o600)
+    link = tmp_path / "config.toml"
+    link.symlink_to(target)
+    load(link)
+    assert link.is_symlink()
+    assert "[filters]" in target.read_text(encoding="utf-8")
+    assert oct(target.stat().st_mode & 0o777) == "0o600"
+    backup = real / "config.toml.before-0.5"
+    assert oct(backup.stat().st_mode & 0o777) == "0o600"
+    assert [p.name for p in real.iterdir() if p.name.startswith(".")] == []
+
+
+def test_automatic_filters_use_a_config_changed_meanwhile(tmp_path, monkeypatch):
+    from reviewbot import config as cfg
+
+    path = write(tmp_path, None)
+    real_flock = cfg.fcntl.flock
+
+    def other_process_first(handle, operation):
+        path.write_text(
+            'watch = ["other"]\nmultiplexer = "herdr"\n'
+            + FILTERS_TABLE.replace('"requested"', '"involves"'),
+            encoding="utf-8",
+        )
+        real_flock(handle, operation)
+
+    monkeypatch.setattr(cfg.fcntl, "flock", other_process_first)
+    config = load(path)
+    assert (config.filters.open, config.scope.describe()) == ("involves", "other")
+    assert path.read_text(encoding="utf-8").count("[filters]") == 1
+    assert not (tmp_path / "config.toml.before-0.5").exists()
+
+
+def test_a_bad_work_dir_is_refused_before_the_config_is_touched(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(BASE + "work_dir = 123\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="`work_dir` must be a directory path"):
+        load(path)
+    assert "[filters]" not in path.read_text(encoding="utf-8")
+
+
+def candidate_for(number):
+    from reviewbot.github import QueueStatus, ReviewCandidate
+
+    return ReviewCandidate(
+        repo="acme/api", number=number, title="t", author="bob", url=f"u{number}",
+        updated_at="2026-11-20T00:00:00Z", head_sha="h", head_branch="b", base_branch="main",
+        is_draft=False, review_decision="", request_source="none", last_review_state=None,
+        last_review_sha=None, commits_since_review=0, checks="none", status=QueueStatus.READY,
+    )
+
+
+def test_board_keeps_open_tabs_of_prs_another_filter_shows(tmp_path, monkeypatch):
+    item, _ = board_with_fetches(tmp_path, monkeypatch)
+    wide, narrow = candidate_for(1), candidate_for(2)
+    item.update_queue([wide, narrow], {wide.key}, "all")
+    item.update_queue([narrow], set(), "requested")
+    assert wide.key in item.active
+    item.update_active(set(), [wide.key])
+    assert wide.key not in item.active
+    rows = item.snapshot({"queue": "all"})["queue"]
+    assert [(row["key"], row["actionable"]) for row in rows] == [(wide.key, True), (narrow.key, True)]
+
+
+def note_at(thread_id, updated_at):
+    from reviewbot.github import Notification
+
+    return Notification(
+        id=thread_id, repo="acme/api", kind="pr", number=1, title="t", reason="comment",
+        updated_at=updated_at, url="https://github.com/acme/api/pull/1",
+    )
+
+
+def test_a_read_thread_leaves_every_filter_and_only_a_later_fetch_restores_it(
+    tmp_path, monkeypatch,
+):
+    item, _ = board_with_fetches(tmp_path, monkeypatch)
+    note = note_at("7", "2026-01-01T00:00:00Z")
+    item.update_notifications([note], "all")
+    item.update_notifications([note], "reviews")
+    before_read = time.monotonic()
+    item.forget("7")
+    assert item.items("notifications", "all") == item.items("notifications", "reviews") == []
+    item.update_notifications([note], "reviews", before_read)
+    assert item.items("notifications", "reviews") == []
+    item.update_notifications([note], "all", time.monotonic() - 3600)
+    assert item.items("notifications", "all") == []
+    item.update_notifications([note], "all")
+    assert item.items("notifications", "all") == [note]
+
+
+def test_an_older_fetch_never_replaces_a_newer_one(tmp_path, monkeypatch):
+    item, _ = board_with_fetches(tmp_path, monkeypatch)
+    older, newer = time.monotonic(), time.monotonic() + 1
+    assert item.update_mine([], "ready", newer) is True
+    assert item.update_mine(["stale result"], "ready", older) is False
+    assert item.items("mine", "ready") == []
+
+
+def test_launch_looks_the_pr_up_directly(monkeypatch):
+    views = {
+        5: pr_view(5, "bob", ["me"]), 6: pr_view(6, "me", []),
+        7: json.dumps({**json.loads(pr_view(7, "bob", [])), "state": "MERGED"}),
+    }
+
+    async def run(*args, **kwargs):
+        if args[:3] == ("gh", "api", "user"):
+            return "me\n"
+        if args[:3] == ("gh", "search", "prs"):
+            return json.dumps([summary(5, "bob")])
+        raise AssertionError(args)
+
+    async def details(repo, number):
+        data = json.loads(views[number])
+        data.setdefault("state", "OPEN")
+        return json.dumps(data)
+
+    monkeypatch.setattr(github, "_run", run)
+    monkeypatch.setattr(github, "_details_raw", details)
+    assert asyncio.run(github.one_pr("acme/api", 5)).request_source == "direct"
+
+    async def search_down(*args, **kwargs):
+        if args[:3] == ("gh", "search", "prs"):
+            raise github.GhError("gh: HTTP 502")
+        return await run(*args, **kwargs)
+
+    monkeypatch.setattr(github, "_run", search_down)
+    assert asyncio.run(github.one_pr("acme/api", 5)).request_source == "direct"
+    with pytest.raises(github.GhError, match="your own PR"):
+        asyncio.run(github.one_pr("acme/api", 6))
+    with pytest.raises(github.GhError, match="is merged, not open"):
+        asyncio.run(github.one_pr("acme/api", 7))
+
+
+def tui_app(tmp_path, scope=None):
+    from types import SimpleNamespace
+
+    from reviewbot.config import Filters
+    from reviewbot.tui import app as tui
+
+    config = SimpleNamespace(
+        scope=scope or Scope.parse(["acme"]),
+        filters=Filters("requested", "all", "all", ("pr", "issue"), 14),
+        launchers=[], agents=[], path=tmp_path, multiplexer_name="rex",
+    )
+    return tui, tui.ReviewQueueApp(config)
+
+
+def test_tui_ignores_a_late_fetch_for_an_earlier_filter(monkeypatch, tmp_path):
+    tui, app = tui_app(tmp_path)
+    release = asyncio.Event()
+
+    async def fetch_notes(scope, view, kinds):
+        if view == "all":
+            await release.wait()
+            return [note_at("1", "2026-11-01T00:00:00Z")]
+        return [note_at("2", "2026-11-02T00:00:00Z")]
+
+    async def nothing(*args):
+        return []
+
+    monkeypatch.setattr(tui, "open_prs", nothing)
+    monkeypatch.setattr(tui, "my_prs", nothing)
+    monkeypatch.setattr(tui, "notifications", fetch_notes)
+    monkeypatch.setattr(tui, "active_review_keys", lambda config, candidates: set())
+
+    async def scenario():
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("3")
+            await pilot.press("f")
+            await pilot.pause()
+            assert [note.id for note in app._notes] == ["2"]
+            release.set()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert [note.id for note in app._notes] == ["2"]
+            assert app._views["notifications"] == "participating"
+            assert [note.id for note in app.board.items("notifications", "all")] == ["1"]
+
+    asyncio.run(scenario())
+
+
+def test_tui_keeps_the_old_filter_when_the_new_one_fails(monkeypatch, tmp_path):
+    tui, app = tui_app(tmp_path)
+
+    async def open_prs(scope, view, stale_days):
+        if view == "involves":
+            raise github.GhError("search failed")
+        return [candidate_for(1)]
+
+    async def nothing(*args):
+        return []
+
+    monkeypatch.setattr(tui, "open_prs", open_prs)
+    monkeypatch.setattr(tui, "my_prs", nothing)
+    monkeypatch.setattr(tui, "notifications", nothing)
+    monkeypatch.setattr(tui, "active_review_keys", lambda config, candidates: set())
+
+    async def scenario():
+        async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.press("f")
+            await pilot.pause()
+            assert app._views["queue"] == "requested"
+            assert str(app.query_one("#tabs").get_tab(tui.QUEUE_TAB).label) == (
+                "Open PRs: requested (1) [1]"
+            )
+            assert "could not load involves: search failed" in str(app._status_line.render())
+
+    asyncio.run(scenario())
+
+
+def test_a_poll_overtaking_a_filter_change_keeps_the_new_filter(monkeypatch, tmp_path):
+    tui, app = tui_app(tmp_path)
+    release = asyncio.Event()
+
+    async def fetch_notes(scope, view, kinds):
+        if view == "participating":
+            await release.wait()
+        return [note_at("3", "2026-11-03T00:00:00Z")]
+
+    async def nothing(*args):
+        return []
+
+    monkeypatch.setattr(tui, "open_prs", nothing)
+    monkeypatch.setattr(tui, "my_prs", nothing)
+    monkeypatch.setattr(tui, "notifications", fetch_notes)
+    monkeypatch.setattr(tui, "active_review_keys", lambda config, candidates: set())
+
+    async def scenario():
+        async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.press("3")
+            change = asyncio.ensure_future(app.action_cycle_filter())
+            await pilot.pause()
+            poll = asyncio.ensure_future(app._poll_notes())
+            await pilot.pause()
+            release.set()
+            await asyncio.gather(change, poll)
+            await pilot.pause()
+            assert app._views["notifications"] == "participating"
+            label = str(app.query_one("#tabs").get_tab(tui.NOTES_TAB).label)
+            assert label == "Notifications: participating (1) [3]"
+
+    asyncio.run(scenario())
+
+
+def test_my_prs_skip_the_stale_date_unless_asked(monkeypatch):
+    async def nodes(query):
+        return []
+
+    def boom(days):
+        raise OverflowError("date value out of range")
+
+    monkeypatch.setattr(github, "_authored_nodes", nodes)
+    monkeypatch.setattr(github, "stale_cutoff", boom)
+    assert asyncio.run(github.my_prs(Scope.parse(["acme"]), "all", 14)) == []
+
+
+def test_an_edit_during_the_automatic_write_is_kept(tmp_path, monkeypatch):
+    from reviewbot import config as cfg
+
+    path = write(tmp_path, None)
+    real_stage = cfg._stage
+    edited = BASE + "# edited while ReviewBot was writing\n"
+
+    def editor_saves(target, text, mode, staged):
+        result = real_stage(target, text, mode, staged)
+        if target == path.resolve():
+            path.write_text(edited, encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(cfg, "_stage", editor_saves)
+    monkeypatch.setattr(cfg, "add_filters", lambda text: text + FILTERS_TABLE)
+    with pytest.raises(ConfigError, match="could not add it"):
+        load(path, _attempts=1)
+    assert path.read_text(encoding="utf-8") == edited
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+
+def test_a_failed_poll_that_overtook_a_filter_change_puts_the_old_filter_back(
+    monkeypatch, tmp_path,
+):
+    tui, app = tui_app(tmp_path)
+    release = asyncio.Event()
+    calls = []
+
+    async def fetch_notes(scope, view, kinds):
+        calls.append(view)
+        if view == "participating":
+            if len(calls) == 2:
+                await release.wait()
+                return [note_at("9", "2026-11-09T00:00:00Z")]
+            raise github.GhError("rate limited")
+        return [note_at("1", "2026-11-01T00:00:00Z")]
+
+    async def nothing(*args):
+        return []
+
+    monkeypatch.setattr(tui, "open_prs", nothing)
+    monkeypatch.setattr(tui, "my_prs", nothing)
+    monkeypatch.setattr(tui, "notifications", fetch_notes)
+    monkeypatch.setattr(tui, "active_review_keys", lambda config, candidates: set())
+
+    async def scenario():
+        async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.press("3")
+            change = asyncio.ensure_future(app.action_cycle_filter())
+            await pilot.pause()
+            await app._poll_notes()
+            release.set()
+            await change
+            await pilot.pause()
+            assert app._views["notifications"] == "all"
+            assert [note.id for note in app._notes] == ["1"]
+            label = str(app.query_one("#tabs").get_tab(tui.NOTES_TAB).label)
+            assert label == "Notifications: all (1) [3]"
+
+    asyncio.run(scenario())
+
+
+def test_launch_skips_the_search_for_a_direct_request_and_bounds_it_otherwise(monkeypatch):
+    searched = []
+    team = json.loads(pr_view(8, "bob", []))
+    team["reviewRequests"] = [{"__typename": "Team", "slug": "core"}]
+
+    async def run(*args, **kwargs):
+        if args[:3] == ("gh", "api", "user"):
+            return "me\n"
+        searched.append(args)
+        await asyncio.sleep(60)
+        raise AssertionError("the search should have been cut off")
+
+    async def details(repo, number):
+        data = team if number == 8 else json.loads(pr_view(number, "bob", ["me"]))
+        return json.dumps({**data, "state": "OPEN"})
+
+    monkeypatch.setattr(github, "_run", run)
+    monkeypatch.setattr(github, "_details_raw", details)
+    monkeypatch.setattr(github, "TEAM_SEARCH_SECONDS", 0.05)
+    assert asyncio.run(github.one_pr("acme/api", 5)).request_source == "direct"
+    assert searched == []
+    assert asyncio.run(github.one_pr("acme/api", 8)).request_source == "none"
+    assert len(searched) == 1
+
+
+def test_an_older_queue_result_or_error_changes_nothing(tmp_path, monkeypatch):
+    item, _ = board_with_fetches(tmp_path, monkeypatch)
+    pr = candidate_for(1)
+    newer, older = time.monotonic(), time.monotonic() - 10
+    assert item.update_queue([pr], {pr.key}, "requested", newer) is True
+    assert item.update_queue([pr], set(), "requested", older) is False
+    assert pr.key in item.active
+    item.update_active(set(), [pr.key], older)
+    assert pr.key in item.active
+
+    def failing(view, value):
+        raise github.GhError("late failure")
+
+    monkeypatch.setattr(item, "_fetch", failing)
+    monkeypatch.setattr("reviewbot.board.time.monotonic", lambda: older)
+    item.refresh(force=True)
+    assert "queue" not in item.snapshot()["errors"]
+
+
+def test_a_permission_change_during_the_automatic_write_is_kept(tmp_path, monkeypatch):
+    from reviewbot import config as cfg
+
+    path = write(tmp_path, None)
+    path.chmod(0o644)
+    real_stage = cfg._stage
+
+    def user_restricts(target, text, mode, staged):
+        result = real_stage(target, text, mode, staged)
+        if target == path.resolve():
+            path.chmod(0o600)
+        return result
+
+    monkeypatch.setattr(cfg, "_stage", user_restricts)
+    with pytest.raises(ConfigError, match="could not add it"):
+        load(path, _attempts=1)
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    assert "[filters]" not in path.read_text(encoding="utf-8")
+
+
+def test_a_cancelled_gh_call_kills_its_process():
+    started = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def recording(*args, **kwargs):
+        proc = await real_exec(*args, **kwargs)
+        started.append(proc)
+        return proc
+
+    async def scenario():
+        asyncio.create_subprocess_exec = recording
+        try:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(github._run_once("sleep", "30", timeout=60), 0.2)
+        finally:
+            asyncio.create_subprocess_exec = real_exec
+        return started[0].returncode
+
+    assert asyncio.run(scenario()) is not None

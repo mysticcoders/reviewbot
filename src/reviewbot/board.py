@@ -100,10 +100,15 @@ CHOICES = {
 
 @dataclass
 class _Slot:
-    """One view's items for one filter, when they were fetched, and the last fetch error."""
+    """One view's items for one filter, when they were fetched, and the last fetch error.
+
+    `at` is the wall-clock time the items arrived, shown to people; `started` is when
+    their fetch began on the monotonic clock, used to order fetches of the same slot.
+    """
 
     items: list[Any] = field(default_factory=list)
     at: float = 0.0
+    started: float = 0.0
     error: str | None = None
 
 
@@ -121,6 +126,8 @@ class Board:
     config: Config
     active: set[str] = field(default_factory=set)
     _slots: dict[tuple[str, str], _Slot] = field(default_factory=dict, repr=False)
+    _read: dict[str, float] = field(default_factory=dict, repr=False)
+    _active_at: dict[str, float] = field(default_factory=dict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _fetch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -142,27 +149,83 @@ class Board:
     def _slot(self, view: str, value: str) -> _Slot:
         return self._slots.setdefault((view, value), _Slot())
 
-    def _store(self, view: str, value: str | None, items: list[Any]) -> None:
+    def _store(
+        self, view: str, value: str | None, items: list[Any], started: float | None = None,
+    ) -> bool:
+        """Keep a fetch's items for its filter, unless a fetch that began later is already
+        kept. `started` is when the fetch began (`time.monotonic()`); None means now."""
         value = value or self.filters()[view]
+        started = time.monotonic() if started is None else started
         with self._lock:
-            self._slots[(view, value)] = _Slot(list(items), time.time())
+            return self._store_locked(view, value, items, started)
+
+    def _store_locked(self, view: str, value: str, items: list[Any], started: float) -> bool:
+        if started < self._slot(view, value).started:
+            return False
+        if view == "notifications":
+            items = [item for item in items if not self._read_after(item, started)]
+        self._slots[(view, value)] = _Slot(list(items), time.time(), started)
+        return True
+
+    def _read_after(self, item: Notification, started: float) -> bool:
+        """Whether the user marked this thread read after the fetch that found it began.
+
+        A fetch that began after the read is GitHub's word on whether the thread is
+        unread again, so only earlier fetches are filtered.
+        """
+        read_at = self._read.get(item.id)
+        return read_at is not None and read_at > started
 
     def update_queue(
         self, candidates: list[ReviewCandidate], active: set[str], view: str | None = None,
+        started: float | None = None,
+    ) -> bool:
+        """Keep a queue fetch and its open tabs together, unless a newer fetch is kept.
+
+        Rows and their in-progress state change under one lock, so a snapshot never
+        shows a new row as actionable before its open review tab is recorded.
+        """
+        value = view or self.filters()["queue"]
+        started = time.monotonic() if started is None else started
+        with self._lock:
+            if not self._store_locked("queue", value, candidates, started):
+                return False
+            self._observe_active(active, [candidate.key for candidate in candidates], started)
+        return True
+
+    def update_active(
+        self, active: set[str], checked: list[str], started: float | None = None,
     ) -> None:
+        """Record which of the `checked` PRs have an open review tab, keeping the others.
+
+        Tabs are looked up only for the PRs a caller has, so a refresh of one filter must
+        not clear the in-progress state of PRs that only another filter shows. Each PR
+        keeps its newest observation: a look that began before an earlier recorded one
+        (`started`, on the monotonic clock; None means now) is ignored for that PR.
+        """
+        started = time.monotonic() if started is None else started
         with self._lock:
-            self.active = set(active)
-        self._store("queue", view, candidates)
+            self._observe_active(active, checked, started)
 
-    def update_active(self, active: set[str]) -> None:
-        with self._lock:
-            self.active = set(active)
+    def _observe_active(self, active: set[str], checked: list[str], started: float) -> None:
+        for key in checked:
+            if started < self._active_at.get(key, float("-inf")):
+                continue
+            self._active_at[key] = started
+            if key in active:
+                self.active.add(key)
+            else:
+                self.active.discard(key)
 
-    def update_mine(self, authored: list[AuthoredPR], view: str | None = None) -> None:
-        self._store("mine", view, authored)
+    def update_mine(
+        self, authored: list[AuthoredPR], view: str | None = None, started: float | None = None,
+    ) -> bool:
+        return self._store("mine", view, authored, started)
 
-    def update_notifications(self, notes: list[Notification], view: str | None = None) -> None:
-        self._store("notifications", view, notes)
+    def update_notifications(
+        self, notes: list[Notification], view: str | None = None, started: float | None = None,
+    ) -> bool:
+        return self._store("notifications", view, notes, started)
 
     def items(self, view: str, value: str | None = None) -> list[Any]:
         """The cached items of one view for one filter (the configured one by default)."""
@@ -180,11 +243,17 @@ class Board:
         if found is None:
             raise OpenError(f"{thread_id} is not an unread notification")
         asyncio.run(mark_notification_read(thread_id))
+        self.forget(thread_id)
+        return found
+
+    def forget(self, thread_id: str) -> None:
+        """Drop a thread marked read from every filter, and keep a fetch that was already
+        under way from bringing it back."""
         with self._lock:
+            self._read[thread_id] = time.monotonic()
             for (view, _), slot in self._slots.items():
                 if view == "notifications":
                     slot.items = [item for item in slot.items if item.id != thread_id]
-        return found
 
     def _fetch(self, view: str, value: str) -> list[Any]:
         filters = self.config.filters
@@ -212,17 +281,20 @@ class Board:
                     fetched = self._slot(view, value).at
                 if not force and now - fetched <= STALE_SECONDS:
                     continue
+                started = time.monotonic()
                 try:
                     items = self._fetch(view, value)
                     active = active_review_keys(self.config, items) if view == "queue" else None
                 except (GhError, LaunchError, OSError) as error:
                     with self._lock:
-                        self._slot(view, value).error = str(error)
+                        slot = self._slot(view, value)
+                        if started >= slot.started:
+                            slot.error = str(error)
                     continue
                 if active is not None:
-                    self.update_queue(items, active, value)
+                    self.update_queue(items, active, value, started)
                 else:
-                    self._store(view, value, items)
+                    self._store(view, value, items, started)
         return chosen
 
     def snapshot(self, wanted: dict[str, str | None] | None = None) -> dict[str, Any]:

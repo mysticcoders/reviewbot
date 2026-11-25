@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import time
 from datetime import UTC, datetime
 from typing import ClassVar
 
@@ -42,6 +43,7 @@ from ..run import collects, launch_review
 from ..server import Dashboard, ServeError
 
 TAB_POLL_SECONDS = 3
+DONE, SUPERSEDED, FAILED = "done", "superseded", "failed"
 NOTES_POLL_SECONDS = 120
 
 
@@ -224,6 +226,9 @@ class ReviewQueueApp(App[None]):
             "mine": config.filters.mine,
             "notifications": config.filters.notifications,
         }
+        self._tickets = {view: 0 for view in self._views}
+        self._shown = dict(self._views)
+        self._last_error = ""
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -439,22 +444,41 @@ class ReviewQueueApp(App[None]):
         else:
             await self._refresh_queue()
 
-    async def _refresh_queue(self) -> None:
+    def _ticket(self, view: str) -> tuple[str, int, float]:
+        """Start a fetch for a view: its filter, its place among fetches, and when it began."""
+        self._tickets[view] += 1
+        return self._views[view], self._tickets[view], time.monotonic()
+
+    def _current(self, view: str, value: str, ticket: int) -> bool:
+        """Whether a finished fetch is still the one the tab should show.
+
+        A fetch started under an earlier filter, or overtaken by a newer fetch, still
+        fills the board's cache for its own filter but leaves the tab alone.
+        """
+        return self._tickets[view] == ticket and self._views[view] == value
+
+    async def _refresh_queue(self) -> str:
+        """Fetch Open PRs for the current filter: DONE, SUPERSEDED, or FAILED."""
         if self._launching:
-            return
-        self._status_line.update(f"Fetching review requests in {self.config.scope.describe()}…")
+            return SUPERSEDED
+        value, ticket, started = self._ticket("queue")
+        self._status_line.update(f"Fetching open PRs in {self.config.scope.describe()}…")
         try:
-            candidates = await open_prs(
-                self.config.scope, self._views["queue"], self.config.filters.stale_days,
-            )
+            candidates = await open_prs(self.config.scope, value, self.config.filters.stale_days)
             active = await asyncio.to_thread(active_review_keys, self.config, candidates)
         except (GhError, LaunchError, OSError) as error:
+            self._last_error = str(error)
+            if not self._current("queue", value, ticket):
+                return SUPERSEDED
             self._status_line.update(f"[red]Refresh failed:[/red] {escape(str(error))}")
-            return
+            return self._failed("queue")
+        self.board.update_queue(candidates, active, value, started)
+        if not self._current("queue", value, ticket):
+            return SUPERSEDED
         selected = self._selected()
+        self._shown_filter("queue", value)
         self._candidates = candidates
         self._active = active
-        self.board.update_queue(candidates, active, self._views["queue"])
         self._table.clear()
         for candidate in candidates:
             self._table.add_row(
@@ -473,6 +497,7 @@ class ReviewQueueApp(App[None]):
         if self._tab == QUEUE_TAB:
             self._show_summary()
             self._show_selected()
+        return DONE
 
     async def _sync_active(self) -> None:
         """Re-check which PRs still have an open review tab, without asking GitHub.
@@ -486,6 +511,7 @@ class ReviewQueueApp(App[None]):
         self._syncing = True
         try:
             candidates = self._candidates
+            looked = time.monotonic()
             try:
                 active = await asyncio.to_thread(active_review_keys, self.config, candidates)
             except (LaunchError, OSError):
@@ -494,7 +520,9 @@ class ReviewQueueApp(App[None]):
                 return
             closed = bool(self._active - active)
             self._active = active
-            self.board.update_active(active)
+            self.board.update_active(
+                active, [candidate.key for candidate in candidates], looked,
+            )
             for row, candidate in enumerate(candidates):
                 self._table.update_cell_at((row, 0), _display_status(candidate, active))
             if self._tab == QUEUE_TAB:
@@ -504,19 +532,25 @@ class ReviewQueueApp(App[None]):
         if closed:
             await self._refresh_queue()
 
-    async def _refresh_mine(self, *, quiet: bool = False) -> None:
+    async def _refresh_mine(self, *, quiet: bool = False) -> str:
+        """Fetch My PRs for the current filter: DONE, SUPERSEDED, or FAILED."""
+        value, ticket, started = self._ticket("mine")
         if not quiet:
             self._status_line.update(f"Fetching your open PRs in {self.config.scope.describe()}…")
         try:
-            authored = await my_prs(
-                self.config.scope, self._views["mine"], self.config.filters.stale_days,
-            )
+            authored = await my_prs(self.config.scope, value, self.config.filters.stale_days)
         except (GhError, OSError) as error:
+            self._last_error = str(error)
+            if not self._current("mine", value, ticket):
+                return SUPERSEDED
             self._status_line.update(f"[red]My PRs refresh failed:[/red] {escape(str(error))}")
-            return
+            return self._failed("mine")
+        self.board.update_mine(authored, value, started)
+        if not self._current("mine", value, ticket):
+            return SUPERSEDED
         row = self._mine_table.cursor_row
+        self._shown_filter("mine", value)
         self._authored = authored
-        self.board.update_mine(authored, self._views["mine"])
         self._mine_table.clear()
         for pr in authored:
             self._mine_table.add_row(
@@ -534,25 +568,38 @@ class ReviewQueueApp(App[None]):
         if self._on_mine:
             self._show_summary()
             self._show_selected()
+        return DONE
 
     async def _poll_notes(self) -> None:
         await self._refresh_notes(quiet=True)
 
-    async def _refresh_notes(self, *, quiet: bool = False) -> None:
-        """Fetch unread notifications, redraw their tab, and mark PR rows that have any."""
+    async def _refresh_notes(self, *, quiet: bool = False) -> str:
+        """Fetch unread notifications, redraw their tab, and mark PR rows that have any.
+
+        Returns DONE, SUPERSEDED (a newer fetch or another filter took over), or FAILED.
+        """
+        value, ticket, started = self._ticket("notifications")
         if not quiet:
             self._status_line.update(f"Fetching notifications in {self.config.scope.describe()}…")
         try:
             notes = await notifications(
-                self.config.scope, self._views["notifications"],
-                self.config.filters.notification_kinds,
+                self.config.scope, value, self.config.filters.notification_kinds,
             )
         except (GhError, OSError) as error:
+            self._last_error = str(error)
+            if not self._current("notifications", value, ticket):
+                return SUPERSEDED
             if not quiet or self._on_notes:
-                self._status_line.update(f"[red]Notifications refresh failed:[/red] {escape(str(error))}")
-            return
-        self._show_notes(notes)
-        self.board.update_notifications(notes, self._views["notifications"])
+                self._status_line.update(
+                    f"[red]Notifications refresh failed:[/red] {escape(str(error))}"
+                )
+            return self._failed("notifications")
+        self.board.update_notifications(notes, value, started)
+        if not self._current("notifications", value, ticket):
+            return SUPERSEDED
+        self._shown_filter("notifications", value)
+        self._show_notes(self.board.items("notifications", value))
+        return DONE
 
     def _show_notes(self, notes: list[Notification]) -> None:
         selected = self._selected_note()
@@ -595,13 +642,28 @@ class ReviewQueueApp(App[None]):
             return False
         finally:
             self._marking = False
+        self.board.forget(note.id)
         self._show_notes([item for item in self._notes if item.id != note.id])
-        self.board.update_notifications(self._notes, self._views["notifications"])
         self._status_line.update(f"Marked {escape(note.key)} read")
         return True
 
+    def _shown_filter(self, view: str, value: str) -> None:
+        """Record that a view's rows now come from `value`."""
+        self._shown[view] = value
+
+    def _failed(self, view: str) -> str:
+        """After a current fetch fails, select the filter the rows on screen came from.
+
+        A failed switch, by `f` or by a poll that overtook it, leaves the old rows in
+        place, so the selection goes back to match them.
+        """
+        if self._views[view] != self._shown[view]:
+            self._views[view] = self._shown[view]
+            self._label_tabs()
+        return FAILED
+
     def _label_tabs(self) -> None:
-        """Title each tab with its filter and count, e.g. `Open PRs: all (14) [1]`."""
+        """Title each tab with the filter its rows came from and their count."""
         counts = {
             "queue": len(self._candidates), "mine": len(self._authored),
             "notifications": len(self._notes),
@@ -609,7 +671,7 @@ class ReviewQueueApp(App[None]):
         tabs = self.query_one("#tabs", TabbedContent)
         for tab, view in TAB_VIEWS.items():
             name, number = TAB_NAMES[view]
-            tabs.get_tab(tab).label = f"{name}: {self._views[view]} ({counts[view]}) [{number}]"
+            tabs.get_tab(tab).label = f"{name}: {self._shown[view]} ({counts[view]}) [{number}]"
 
     def _filter_choices(self, view: str) -> list[str]:
         """The filters `f` cycles through; `all` is left out when watching everything."""
@@ -619,20 +681,33 @@ class ReviewQueueApp(App[None]):
         return choices
 
     async def action_cycle_filter(self) -> None:
-        """Switch the current tab to its next filter until the TUI quits, and refetch it."""
+        """Switch the current tab to its next filter until the TUI quits, and refetch it.
+
+        Only a failure of the fetch for the new filter puts the old one back; a fetch that
+        a newer one overtook leaves the choice alone.
+        """
         view = TAB_VIEWS[self._tab]
+        if view == "queue" and self._launching:
+            self._status_line.update("Wait for the launch to finish before changing the filter")
+            return
         choices = self._filter_choices(view)
         current = self._views[view]
         position = choices.index(current) if current in choices else -1
-        self._views[view] = choices[(position + 1) % len(choices)]
+        chosen = choices[(position + 1) % len(choices)]
+        self._views[view] = chosen
         name, _ = TAB_NAMES[view]
-        self._status_line.update(f"{name} filter: {self._views[view]} (until you quit)")
+        self._status_line.update(f"{name} filter: {chosen} (until you quit)")
         if view == "queue":
-            await self._refresh_queue()
+            outcome = await self._refresh_queue()
         elif view == "mine":
-            await self._refresh_mine(quiet=True)
+            outcome = await self._refresh_mine(quiet=True)
         else:
-            await self._refresh_notes(quiet=True)
+            outcome = await self._refresh_notes(quiet=True)
+        if outcome == FAILED:
+            self._status_line.update(
+                f"[red]{name} stays on {self._shown[view]}:[/red] could not load {chosen}: "
+                f"{escape(self._last_error)}"
+            )
 
     def _show_summary(self) -> None:
         if self._on_notes:
@@ -743,7 +818,7 @@ class ReviewQueueApp(App[None]):
             self._status_line.update(f"[red]Launch failed:[/red] {escape(str(error))}")
         else:
             self._active.add(candidate.key)
-            self.board.update_active(self._active)
+            self.board.update_active({candidate.key}, [candidate.key])
             self._table.update_cell_at(
                 (self._table.cursor_row, 0), "in-progress"
             )

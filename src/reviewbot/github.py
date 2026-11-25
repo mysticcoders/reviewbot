@@ -65,15 +65,19 @@ def _transient(error: GhError) -> bool:
 
 
 async def _run_once(*args: str, timeout: float) -> str:
+    """Run one `gh` command; a timeout or a cancelled caller kills and reaps the process."""
     proc = await asyncio.create_subprocess_exec(
         *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise GhError(f"timed out after {timeout}s: {' '.join(args)}")
+    except (TimeoutError, asyncio.CancelledError) as error:
+        if proc.returncode is None:
+            proc.kill()
+            await asyncio.shield(proc.wait())
+        if isinstance(error, TimeoutError):
+            raise GhError(f"timed out after {timeout}s: {' '.join(args)}") from None
+        raise
     if proc.returncode != 0:
         message = stderr.decode("utf-8", errors="replace").strip()
         raise GhError(message or f"exit {proc.returncode}: {' '.join(args)}")
@@ -247,6 +251,37 @@ def _dedupe(items: list[dict[str, Any]], key) -> list[dict[str, Any]]:
             seen.add(identity)
             result.append(item)
     return result
+
+
+TEAM_SEARCH_SECONDS = 15.0
+
+
+async def one_pr(repo: str, number: int) -> ReviewCandidate:
+    """Look one PR up directly, for launching it: it must be open and not the user's own.
+
+    A review request naming the user is read from the PR itself, and settles it. Only
+    otherwise is the Open PRs search for the repository asked, to find a request through
+    one of the user's teams; that search is best effort and limited to a few seconds, so
+    if it fails or is slow the PR still launches, marked as not requested.
+    """
+    login, raw = await asyncio.gather(current_login(), _details_raw(repo, number))
+    data = json.loads(raw)
+    state = str(data.get("state") or "").upper()
+    if state != "OPEN":
+        raise GhError(f"{repo}#{number} is {state.lower() or 'not found'}, not open")
+    if (data.get("author") or {}).get("login") == login:
+        raise GhError(f"{repo}#{number} is your own PR")
+    requests = data.get("reviewRequests") or []
+    requested = any(request.get("login") == login for request in requests)
+    if not requested and requests:
+        try:
+            asked = await asyncio.wait_for(
+                _requested_summaries(["--repo", repo]), TEAM_SEARCH_SECONDS,
+            )
+        except (GhError, OSError, TimeoutError):
+            asked = []
+        requested = any(item.get("number") == number for item in asked)
+    return _candidate(repo, number, data, login, requested)
 
 
 def _summary_key(item: dict[str, Any]) -> str:
@@ -554,7 +589,7 @@ async def my_prs(scope: Scope, view: str, stale_days: int) -> list[AuthoredPR]:
             nodes.setdefault(key, node)
             if role not in roles.setdefault(key, []):
                 roles[key].append(role)
-    cutoff = stale_cutoff(stale_days)
+    cutoff = stale_cutoff(stale_days) if view == "stale" else ""
     prs = [
         pr for key, node in nodes.items()
         if _keep_mine(pr := replace(_authored_pr(node), roles=tuple(roles[key])), view, cutoff)

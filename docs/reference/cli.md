@@ -43,4 +43,4 @@ reviewbot token --rotate                  # replace the token; clients must upda
 - `tailnet login` and `tailnet logout` take `--hostname`.
 - `tui --serve` starts the dashboard with the TUI, and does not open the browser.
 
-`launch` looks the PR up among the open PRs of that repository. So it works whatever the configured `watch` list and filters are.
+`launch` looks the PR up directly on GitHub, so it works whatever the configured `watch` list and filters are, and however old the PR is. The PR must be open and not your own.

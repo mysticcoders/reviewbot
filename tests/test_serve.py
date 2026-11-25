@@ -99,7 +99,43 @@ def test_token_is_owner_only_and_stable_until_rotated(tmp_path):
     first = load_token(config)
     assert stat.S_IMODE(token_path(config).stat().st_mode) == 0o600
     assert load_token(config) == first
-    assert load_token(config, rotate=True) != first
+    rotated = load_token(config, rotate=True)
+    assert rotated != first
+    assert stat.S_IMODE(token_path(config).stat().st_mode) == 0o600
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+
+def test_a_rotated_token_takes_effect_on_a_running_server(dashboard):
+    def get(token):
+        return request(dashboard, "GET", "/api/prs", headers={
+            "Authorization": f"Bearer {token}",
+        })[0].status
+
+    old = dashboard.token
+    assert get(old) == 200
+    new = load_token(dashboard.http.board.config, rotate=True)
+    assert (get(old), get(new)) == (401, 200)
+    assert dashboard.token == new
+    assert dashboard.login_url.endswith(f"?token={new}")
+    cookie = {"Cookie": f"{COOKIE}={old}"}
+    assert request(dashboard, "GET", "/", headers=cookie)[0].status == 401
+
+
+def test_a_missing_or_empty_token_file_refuses_everything(dashboard):
+    def get(token):
+        return request(dashboard, "GET", "/api/prs", headers={
+            "Authorization": f"Bearer {token}",
+        })[0].status
+
+    token = dashboard.token
+    path = dashboard.tokens.path
+    path.unlink()
+    assert get(token) == 401
+    path.write_text("\n", encoding="utf-8")
+    assert get(token) == 401
+    assert get("") == 401
+    path.write_text(token + "\n", encoding="utf-8")
+    assert get(token) == 200
 
 
 def test_board_snapshot_marks_open_tabs_in_progress(tmp_path):

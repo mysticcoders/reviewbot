@@ -92,11 +92,10 @@ For the tools that the server offers, see [MCP tools](../reference/mcp-tools.md)
 reviewbot token --rotate
 ```
 
-Then do these steps:
+A running server, from `reviewbot serve` or the TUI, switches to the new token at once: the old token stops working with the next request. You do not need to restart it. Then:
 
-1. Restart `reviewbot serve`, or the TUI that hosts the server. A running server reads the token only when it starts, so it keeps accepting the old token, and rejects the new one.
-2. Open the new login URL in the browser.
-3. Change the header in each MCP client.
+1. Open the new login URL in the browser. The old cookie no longer works.
+2. Change the header in each MCP client.
 
 ## Give ReviewBot its own tailnet device (macOS)
 

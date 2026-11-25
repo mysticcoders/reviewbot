@@ -8,6 +8,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -39,7 +40,11 @@ def token_path(config: Config) -> Path:
 
 
 def load_token(config: Config, *, rotate: bool = False) -> str:
-    """Read the serve token, creating (or replacing) it as an owner-only file when needed."""
+    """Read the serve token, creating (or replacing) it as an owner-only file when needed.
+
+    A new token is written to a private temporary file and moved into place, so a
+    running server never reads a half-written token.
+    """
     path = token_path(config)
     if not rotate and path.exists():
         token = path.read_text(encoding="utf-8").strip()
@@ -47,11 +52,52 @@ def load_token(config: Config, *, rotate: bool = False) -> str:
             return token
     token = secrets.token_urlsafe(32)
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(token + "\n")
-    path.chmod(0o600)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(token + "\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return token
+
+
+class TokenFile:
+    """The serve token as its file holds it now, so `token --rotate` takes effect at once.
+
+    The file is read again whenever its inode, modification time or size changes. If it
+    is missing, unreadable or empty, no token is valid: the server refuses every request
+    rather than keep trusting a token that may have been rotated away.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.Lock()
+        self._stamp: tuple[int, int, int] | None = None
+        self._token: str | None = None
+
+    def current(self) -> str | None:
+        try:
+            info = os.stat(self.path)
+        except OSError:
+            return None
+        stamp = (info.st_ino, info.st_mtime_ns, info.st_size)
+        with self._lock:
+            if stamp != self._stamp:
+                try:
+                    text = self.path.read_text(encoding="utf-8").strip()
+                except OSError:
+                    return None
+                self._stamp, self._token = stamp, text or None
+            return self._token
+
+    def accepts(self, offered: str | None) -> bool:
+        current = self.current()
+        return bool(offered) and current is not None and hmac.compare_digest(
+            offered.encode(), current.encode(),
+        )
 
 
 def _tailscale() -> str:
@@ -122,7 +168,7 @@ class _Handler(BaseHTTPRequestHandler):
         return parts.scheme in ("http", "https") and parts.netloc.lower() in self.server.allowed_hosts
 
     def _token_ok(self, token: str | None) -> bool:
-        return bool(token) and hmac.compare_digest(token.encode(), self.server.token.encode())
+        return self.server.tokens.accepts(token)
 
     def _bearer(self) -> str | None:
         header = self.headers.get("Authorization") or ""
@@ -275,10 +321,12 @@ class _HttpServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], board: Board, token: str, hosts: tuple[str, ...]):
+    def __init__(
+        self, address: tuple[str, int], board: Board, tokens: TokenFile, hosts: tuple[str, ...],
+    ):
         super().__init__(address, _Handler)
         self.board = board
-        self.token = token
+        self.tokens = tokens
         self.mcp = McpServer(board)
         self.secure = False
         port = self.server_address[1]
@@ -313,10 +361,11 @@ class Dashboard:
             )
         self.serve = serve
         self.listen = listen or resolve_listen(serve.bind)
-        self.token = load_token(config)
+        load_token(config)
+        self.tokens = TokenFile(token_path(config))
         try:
             self.http = _HttpServer(
-                (self.listen.address, serve.port), board, self.token, self.listen.hosts,
+                (self.listen.address, serve.port), board, self.tokens, self.listen.hosts,
             )
         except OSError as error:
             raise ServeError(
@@ -356,6 +405,11 @@ class Dashboard:
     @property
     def mcp_url(self) -> str:
         return f"{self.url}mcp"
+
+    @property
+    def token(self) -> str:
+        """The token the server accepts now, after any `token --rotate`."""
+        return self.tokens.current() or ""
 
     @property
     def login_url(self) -> str:

@@ -14,13 +14,13 @@ With an `[output]` table, ReviewBot keeps every finished review. This page descr
 ```
 
 - `<dir>` is `[output]` `dir`.
-- `<run>` names one launch: `<owner>-<repo>-<n>-<UTC time>`, such as `acme-api-412-20261125T101500Z`.
-- `<step>` is the two-digit step number within the run. A single agent writes step `01`. A group writes one step per agent. A combat writes one step per turn, in order.
+- `<run>` names one launch: `<owner>-<repo>-<n>-<UTC time>-<launcher>`, such as `acme-api-412-20261125T101500Z-claude`. If the same launcher starts twice on the same PR within one second, the second run gets `-2` at the end, and so on.
+- `<step>` is the step number within the run, at least two digits (`01`, `02`, ... `10`, ... `100`). A single agent writes step `01`. A group writes one step per agent. A combat writes one step per turn, in order.
 - `<role>` is `review`, `walkthrough` (a combat opener), `challenge` (a combat rebuttal) or `verdict` (a combat judge).
 
 ## One review file
 
-Each file is Markdown with front matter between `---` lines. Each front matter line is `key: value`, where the value is JSON: strings are quoted, numbers are not. The agent's review follows, as the agent wrote it.
+Each file is Markdown with front matter between `---` lines. Each front matter line is `key: value`, where the value is JSON: strings are quoted, numbers are not. A blank line and the agent's review follow, as the agent wrote it, with leading and trailing whitespace removed and one final newline.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -39,16 +39,16 @@ Each file is Markdown with front matter between `---` lines. Each front matter l
 | `kind` | string | The agent's kind, such as `claude` or `codex`. |
 | `role` | string | `review`, `walkthrough`, `challenge` or `verdict`. |
 | `round` | number | The combat round, `0` outside the rebuttal rounds. |
-| `saved_at` | string | When the review was saved, ISO 8601 in UTC. |
+| `saved_at` | string | When the review was saved: ISO 8601 to the second, with a `+00:00` offset, such as `2026-11-25T10:15:42+00:00`. |
 
 ## The index
 
 `index.jsonl` gets one JSON object per saved review, appended as it is saved. Each object has every front matter field, plus `path`, the absolute path of the review file. ReviewBot only appends to it, so it doubles as an audit log of which agents reviewed which commit, and when.
 
-To list the reviews of one pull request, oldest first:
+Lines are in the order they were appended. Runs that overlap can append in a different order from their `saved_at` times, so sort by `saved_at` when order matters. To list the reviews of one pull request by time saved:
 
 ```sh
-jq -c 'select(.repo == "acme/api" and .pr == 412) | {saved_at, agent, role, head_sha}' ~/reviewbot-reviews/index.jsonl
+jq -s -c 'map(select(.repo == "acme/api" and .pr == 412)) | sort_by(.saved_at)[] | {saved_at, agent, role, head_sha}' ~/reviewbot-reviews/index.jsonl
 ```
 
 ## Recurring patterns

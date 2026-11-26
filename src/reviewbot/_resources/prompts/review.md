@@ -44,6 +44,8 @@ GitHub status at launch:
 - commits since my previous review: {commits_since_review}
 
 Do not edit the branch, push commits, submit a GitHub review, or post comments automatically.
-Present a concise review to me in this session so I can decide what to submit, leading
-with the highest-impact findings and concrete test recommendations. If coverage is
-adequate and there are no substantive issues, say so without inventing findings.
+Write a concise review so I can decide what to submit, leading with the highest-impact
+findings and concrete test recommendations. If you are told to write the review to a
+file, put the complete review there; otherwise present it to me in this session. If
+coverage is adequate and there are no substantive issues, say so without inventing
+findings.

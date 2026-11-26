@@ -13,7 +13,13 @@ from pathlib import Path
 from . import config as cfg
 from .config import Config, ConfigError
 from .github import QueueStatus, ReviewCandidate
-from .launch import LaunchError, LaunchResult, prepare_checkout, render_prompt
+from .launch import (
+    LaunchError,
+    LaunchResult,
+    prepare_checkout,
+    render_prompt,
+    run_command,
+)
 from .multiplexer import open_session, prompt_and_wait, send_prompt
 
 ROLE_TITLES = {
@@ -22,7 +28,7 @@ ROLE_TITLES = {
     "challenge": "Rebuttal",
     "verdict": "Verdict",
 }
-OUTPUT_DIR = ".reviewbot"
+OUTPUT_DIRS = (".reviewbot", ".reviewbot-output", ".reviewbot-runs")
 
 
 @dataclass(frozen=True)
@@ -143,9 +149,49 @@ def step_prompt(
     return text
 
 
-def _run_id(candidate: ReviewCandidate) -> str:
+def _claim_run_dir(config: Config, candidate: ReviewCandidate, launcher: str) -> Path:
+    """Create this launch's run directory under a name no other launch has.
+
+    The name is `<owner>-<repo>-<n>-<UTC time>-<launcher>`, with `-2`, `-3`, ... added
+    when two launches of the same launcher on the same PR land in the same second.
+    """
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return f"{candidate.repo.replace('/', '-')}-{candidate.number}-{stamp}"
+    base = f"{candidate.repo.replace('/', '-')}-{candidate.number}-{stamp}-{launcher}"
+    root = config.work_dir / "runs"
+    root.mkdir(parents=True, exist_ok=True)
+    for attempt in range(1, 1000):
+        run_dir = root / (base if attempt == 1 else f"{base}-{attempt}")
+        try:
+            run_dir.mkdir()
+        except FileExistsError:
+            continue
+        return run_dir
+    raise LaunchError(f"could not create a run directory for {base}")
+
+
+def _tracked(checkout: Path, name: str) -> bool:
+    """Whether git tracks anything at `name` in the checkout; False outside a git checkout."""
+    try:
+        return bool(run_command("git", "-C", str(checkout), "ls-files", "--", name))
+    except LaunchError:
+        return False
+
+
+def output_root(checkout: Path) -> str:
+    """The folder in the checkout where agents write reviews: one the PR does not use.
+
+    `.reviewbot` unless the PR tracks something by that name, or has a file there;
+    then the next name in OUTPUT_DIRS. The folder ignores itself with its own
+    `.gitignore`, so the checkout shows no changes to tracked files.
+    """
+    for name in OUTPUT_DIRS:
+        path = checkout / name
+        if path.exists() and not path.is_dir():
+            continue
+        if _tracked(checkout, name):
+            continue
+        return name
+    raise RunFailed(f"the PR uses every review output folder name: {', '.join(OUTPUT_DIRS)}")
 
 
 def _candidate_dict(candidate: ReviewCandidate) -> dict:
@@ -179,18 +225,22 @@ def launch_review(config: Config, candidate: ReviewCandidate, *, agent: str) -> 
         raise LaunchError(str(error)) from None
 
     checkout = prepare_checkout(config, candidate)
+    run_dir = _claim_run_dir(config, candidate, agent) if background else None
     first = phases[0]
-    results = [
-        open_session(config, candidate, agent=config.agent(step.agent), checkout=checkout)
-        for step in first
-    ]
-    if not background:
+    try:
+        results = [
+            open_session(config, candidate, agent=config.agent(step.agent), checkout=checkout)
+            for step in first
+        ]
+    except BaseException:
+        if run_dir is not None:
+            run_dir.rmdir()
+        raise
+    if run_dir is None:
         for result in results:
             send_prompt(config, result.handle, prompts[result.agent])
         return results
 
-    run_dir = config.work_dir / "runs" / _run_id(candidate)
-    run_dir.mkdir(parents=True)
     (run_dir / "plan.json").write_text(json.dumps({
         "config": str(config.path),
         "launcher": agent,
@@ -203,13 +253,18 @@ def launch_review(config: Config, candidate: ReviewCandidate, *, agent: str) -> 
         "launcher": agent, "status": "starting", "started_at": _now(),
         "steps": [{**_step_summary(step), "status": "pending"} for step in steps],
     })
+    _spawn_runner(run_dir)
+    return results
+
+
+def _spawn_runner(run_dir: Path) -> None:
+    """Start the detached `reviewbot run-plan` process for a run, logging to runner.log."""
     with (run_dir / "runner.log").open("ab") as log:
         subprocess.Popen(
             [sys.executable, "-m", "reviewbot.cli", "run-plan", str(run_dir)],
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-    return results
 
 
 def _now() -> str:
@@ -292,9 +347,12 @@ def execute(run_dir: Path) -> None:
         sessions: dict[str, str] = dict(spec["sessions"])
         phases = plan(config, launcher)
         steps = [step for phase in phases for step in phase]
-        out_dir = checkout / OUTPUT_DIR / run_dir.name
+        root = output_root(checkout)
+        out_dir = checkout / root / run_dir.name
         out_dir.mkdir(parents=True, exist_ok=True)
-        (checkout / OUTPUT_DIR / ".gitignore").write_text("*\n", encoding="utf-8")
+        ignore = checkout / root / ".gitignore"
+        if not ignore.exists():
+            ignore.write_text("*\n", encoding="utf-8")
         outputs: dict[int, str] = {}
         state["status"] = "running"
         _write_state(run_dir, state)
@@ -310,7 +368,7 @@ def execute(run_dir: Path) -> None:
             _write_state(run_dir, state)
 
             def run_step(step: Step) -> str:
-                relative = f"{OUTPUT_DIR}/{run_dir.name}/{step.filename}"
+                relative = f"{root}/{run_dir.name}/{step.filename}"
                 prompt = step_prompt(config, launcher, candidate, step, steps, outputs, relative)
                 return _collect(config, sessions[step.agent], prompt, checkout / relative)
 

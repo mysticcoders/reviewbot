@@ -84,9 +84,15 @@ ReviewBot checks out the PR in a separate worktree. It opens a new tab and start
 
 ## 7. Read the review
 
-Go to the new tab and read what the agent finds. ReviewBot does not post anything to GitHub. You decide what to submit, and you submit it yourself.
+Go to the new tab to watch the agent work. Because the config saves reviews, ReviewBot asks the agent to write its review to a file, and the agent then replies briefly in the tab. To read the review, run:
 
-When the agent finishes, ReviewBot saves its review under `~/reviewbot-reviews/`, and `reviewbot runs` shows where. The review ends with **Recurring patterns**: findings likely to happen again, each with a rule that would catch it.
+```sh
+reviewbot runs
+```
+
+It lists the run with each step's status and the path of the saved review, under `~/reviewbot-reviews/`. The review ends with **Recurring patterns**: findings likely to happen again, each with a rule that would catch it. Without `[output]`, the agent presents the review in the tab instead.
+
+ReviewBot does not post anything to GitHub. You decide what to submit, and you submit it yourself.
 
 ## Next steps
 

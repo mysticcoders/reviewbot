@@ -17,7 +17,7 @@ reviewbot doctor
 
 ## When a release needs a new setting
 
-A release can make a new config setting necessary. Then the old config does not load, and the error names the missing setting. At a terminal, `reviewbot doctor` offers to add it for you. Each such release has a section below.
+A release can make a new config setting necessary. Each such release has a section below that says what to do: some add the setting to your config themselves, and for others the old config does not load until you add it, the error names the missing setting, and `reviewbot doctor`, at a terminal, offers to add it for you.
 
 ### Upgrade to 0.5
 

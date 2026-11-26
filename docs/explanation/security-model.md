@@ -17,7 +17,7 @@ Every HTTP request needs the token. The token is in `~/.config/reviewbot/serve-t
 - MCP clients send `Authorization: Bearer <token>`.
 - The browser opens the login URL from `reviewbot token` once. The server exchanges the token for an `HttpOnly`, `SameSite=Strict` cookie, and redirects to a URL without the token. With `tailscale-node`, the cookie is also `Secure`.
 
-The login URL holds the token, so it stays in the browser history. To make that URL useless, rotate the token and restart the server. A running server reads the token only when it starts, so it accepts the old token until you restart it.
+The login URL holds the token, so it stays in the browser history. To make that URL useless, rotate the token. A running server checks the token file on every request and uses the new token at once, so the old token, and any cookie that holds it, stops working without a restart. If the token file is missing or empty, the server refuses every request until a token is there again.
 
 ## Host and Origin checks
 

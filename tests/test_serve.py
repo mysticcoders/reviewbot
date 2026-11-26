@@ -99,7 +99,86 @@ def test_token_is_owner_only_and_stable_until_rotated(tmp_path):
     first = load_token(config)
     assert stat.S_IMODE(token_path(config).stat().st_mode) == 0o600
     assert load_token(config) == first
-    assert load_token(config, rotate=True) != first
+    rotated = load_token(config, rotate=True)
+    assert rotated != first
+    assert stat.S_IMODE(token_path(config).stat().st_mode) == 0o600
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+
+def test_a_token_file_the_server_would_refuse_is_replaced(tmp_path):
+    config = write(tmp_path)
+    path = token_path(config)
+    for broken in ("half-a-token\n", "\n"):
+        path.write_text(broken, encoding="utf-8")
+        token = load_token(config)
+        assert token != broken.strip() and len(token) == 43
+        assert path.read_text(encoding="utf-8").strip() == token
+    path.write_bytes(b"\xff\xfe")
+    assert len(load_token(config)) == 43
+
+
+def test_recovering_a_broken_token_never_overwrites_a_rotation(tmp_path, monkeypatch):
+    import secrets
+    import threading
+
+    from reviewbot import server as server_module
+
+    config = write(tmp_path)
+    token_path(config).write_text("broken\n", encoding="utf-8")
+    rotated = []
+    real_token = secrets.token_urlsafe
+    started = threading.Event()
+
+    def rotation_meanwhile(size):
+        if not started.is_set():
+            started.set()
+            rotator = threading.Thread(
+                target=lambda: rotated.append(load_token(config, rotate=True)),
+            )
+            rotator.start()
+            rotator.join(0.3)
+            assert rotator.is_alive(), "rotation ran while recovery held the lock"
+            rotation_meanwhile.rotator = rotator
+        return real_token(size)
+
+    monkeypatch.setattr(server_module.secrets, "token_urlsafe", rotation_meanwhile)
+    recovered = load_token(config)
+    rotation_meanwhile.rotator.join(5)
+    assert rotated and rotated[0] != recovered
+    assert token_path(config).read_text(encoding="utf-8").strip() == rotated[0]
+
+
+def test_a_rotated_token_takes_effect_on_a_running_server(dashboard):
+    def get(token):
+        return request(dashboard, "GET", "/api/prs", headers={
+            "Authorization": f"Bearer {token}",
+        })[0].status
+
+    old = dashboard.token
+    assert get(old) == 200
+    new = load_token(dashboard.http.board.config, rotate=True)
+    assert (get(old), get(new)) == (401, 200)
+    assert dashboard.token == new
+    assert dashboard.login_url.endswith(f"?token={new}")
+    cookie = {"Cookie": f"{COOKIE}={old}"}
+    assert request(dashboard, "GET", "/", headers=cookie)[0].status == 401
+
+
+def test_a_missing_or_empty_token_file_refuses_everything(dashboard):
+    def get(token):
+        return request(dashboard, "GET", "/api/prs", headers={
+            "Authorization": f"Bearer {token}",
+        })[0].status
+
+    token = dashboard.token
+    path = dashboard.tokens.path
+    path.unlink()
+    assert get(token) == 401
+    path.write_text("\n", encoding="utf-8")
+    assert get(token) == 401
+    assert get("") == 401
+    path.write_text(token + "\n", encoding="utf-8")
+    assert get(token) == 200
 
 
 def test_board_snapshot_marks_open_tabs_in_progress(tmp_path):
@@ -288,3 +367,71 @@ def test_dashboard_marks_read_with_the_cookie_but_not_cross_site(dashboard, mark
     assert marked == ["102"]
     unknown = json.dumps({"id": "102"})
     assert request(dashboard, "POST", path, body=unknown, headers=cookie)[0].status == 404
+
+
+def bearer_status(server, token):
+    return request(server, "GET", "/api/prs", headers={
+        "Authorization": f"Bearer {token}",
+    })[0].status
+
+
+def test_a_token_file_the_server_cannot_read_refuses_everything(dashboard):
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("root reads files regardless of their mode")
+    token = dashboard.token
+    path = dashboard.tokens.path
+    assert bearer_status(dashboard, token) == 200
+    path.chmod(0o000)
+    try:
+        assert bearer_status(dashboard, token) == 401
+    finally:
+        path.chmod(0o600)
+    assert bearer_status(dashboard, token) == 200
+
+
+def test_half_a_token_or_bytes_that_are_not_utf8_refuse_everything(dashboard):
+    token = dashboard.token
+    path = dashboard.tokens.path
+    path.write_text(token[:20] + "\n", encoding="utf-8")
+    assert bearer_status(dashboard, token[:20]) == 401
+    assert bearer_status(dashboard, token) == 401
+    path.write_bytes(b"\xff\xfe" + token.encode())
+    assert bearer_status(dashboard, token) == 401
+    path.write_text(token + "\n", encoding="utf-8")
+    assert bearer_status(dashboard, token) == 200
+
+
+def test_a_post_whose_body_arrives_after_rotation_is_refused(dashboard, monkeypatch):
+    import socket
+    import threading
+
+    from reviewbot import server as server_module
+
+    checked = threading.Event()
+    real_allowed = server_module._Handler._post_allowed
+
+    def recording(self, path):
+        allowed = real_allowed(self, path)
+        if allowed:
+            checked.set()
+        return allowed
+
+    monkeypatch.setattr(server_module._Handler, "_post_allowed", recording)
+    old = dashboard.token
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode()
+    connection = socket.create_connection(("127.0.0.1", dashboard.port), timeout=5)
+    try:
+        connection.sendall(
+            f"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{dashboard.port}\r\n"
+            f"Authorization: Bearer {old}\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n\r\n".encode()
+        )
+        assert checked.wait(5), "the server never checked the token before the body"
+        load_token(dashboard.http.board.config, rotate=True)
+        connection.sendall(body)
+        reply = connection.recv(4096).decode()
+    finally:
+        connection.close()
+    assert reply.startswith("HTTP/1.1 401")

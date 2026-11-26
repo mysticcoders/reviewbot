@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import fcntl
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
+import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -39,19 +42,73 @@ def token_path(config: Config) -> Path:
 
 
 def load_token(config: Config, *, rotate: bool = False) -> str:
-    """Read the serve token, creating (or replacing) it as an owner-only file when needed."""
+    """Read the serve token, creating (or replacing) it as an owner-only file when needed.
+
+    A file the server would not accept (missing, empty, unreadable, not UTF-8, or not a
+    complete token of the shape ReviewBot writes) is replaced with a new token, so the
+    login URL printed from it always works. A new token is written to a private
+    temporary file and moved into place, so a running server never reads a
+    half-written token.
+
+    Every write holds a lock on `serve-token.lock`, and a read that finds nothing usable
+    checks again under that lock, so replacing a broken file can never overwrite a
+    token that `--rotate` has just published.
+    """
     path = token_path(config)
-    if not rotate and path.exists():
-        token = path.read_text(encoding="utf-8").strip()
+    if not rotate:
+        token = TokenFile(path).current()
         if token:
             return token
-    token = secrets.token_urlsafe(32)
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(token + "\n")
-    path.chmod(0o600)
-    return token
+    lock = os.open(path.with_name(f"{path.name}.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not rotate:
+            token = TokenFile(path).current()
+            if token:
+                return token
+        token = secrets.token_urlsafe(32)
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(token + "\n")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return token
+    finally:
+        os.close(lock)
+
+
+TOKEN_SHAPE = re.compile(r"[A-Za-z0-9_-]{43}")
+
+
+class TokenFile:
+    """The serve token as its file holds it now, so `token --rotate` takes effect at once.
+
+    The file is read on every check; it is a few dozen bytes. Only a complete token of
+    the shape `load_token` writes counts. If the file is missing, unreadable, empty,
+    not UTF-8, or holds anything else, such as half a token from a writer that stopped
+    midway, no token is valid and the server refuses every request.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def current(self) -> str | None:
+        try:
+            text = self.path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return None
+        return text if TOKEN_SHAPE.fullmatch(text) else None
+
+    def accepts(self, offered: str | None) -> bool:
+        current = self.current()
+        return bool(offered) and current is not None and hmac.compare_digest(
+            offered.encode(), current.encode(),
+        )
 
 
 def _tailscale() -> str:
@@ -122,7 +179,7 @@ class _Handler(BaseHTTPRequestHandler):
         return parts.scheme in ("http", "https") and parts.netloc.lower() in self.server.allowed_hosts
 
     def _token_ok(self, token: str | None) -> bool:
-        return bool(token) and hmac.compare_digest(token.encode(), self.server.token.encode())
+        return self.server.tokens.accepts(token)
 
     def _bearer(self) -> str | None:
         header = self.headers.get("Authorization") or ""
@@ -214,18 +271,17 @@ class _Handler(BaseHTTPRequestHandler):
         """Serve MCP (bearer token) and the dashboard's mark-read call (bearer or cookie).
 
         Both require a JSON body, which a cross-site form cannot send without a preflight.
+        The token is checked before the body is read, so strangers are turned away
+        without waiting for it, and again after, so a token rotated while a client held
+        its body back cannot authorize the call.
         """
         if not self._guard():
             return
         path = urlsplit(self.path).path
-        if path == "/mcp":
-            allowed = self._token_ok(self._bearer())
-        elif path == "/api/notifications/read":
-            allowed = self._token_ok(self._bearer()) or self._token_ok(self._cookie())
-        else:
+        if path not in ("/mcp", "/api/notifications/read"):
             self._send(HTTPStatus.NOT_FOUND, b"not found\n")
             return
-        if not allowed:
+        if not self._post_allowed(path):
             self._json(HTTPStatus.UNAUTHORIZED, {"error": "token required"})
             return
         if "application/json" not in (self.headers.get("Content-Type") or ""):
@@ -245,6 +301,9 @@ class _Handler(BaseHTTPRequestHandler):
                 "jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"},
             })
             return
+        if not self._post_allowed(path):
+            self._json(HTTPStatus.UNAUTHORIZED, {"error": "token required"})
+            return
         if path == "/api/notifications/read":
             self._mark_read(payload)
             return
@@ -254,6 +313,12 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._json(HTTPStatus.OK, reply)
 
+
+    def _post_allowed(self, path: str) -> bool:
+        """MCP takes the bearer token; mark-read also takes the dashboard's cookie."""
+        if path == "/mcp":
+            return self._token_ok(self._bearer())
+        return self._token_ok(self._bearer()) or self._token_ok(self._cookie())
 
     def _mark_read(self, payload: Any) -> None:
         thread_id = payload.get("id") if isinstance(payload, dict) else None
@@ -275,10 +340,12 @@ class _HttpServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], board: Board, token: str, hosts: tuple[str, ...]):
+    def __init__(
+        self, address: tuple[str, int], board: Board, tokens: TokenFile, hosts: tuple[str, ...],
+    ):
         super().__init__(address, _Handler)
         self.board = board
-        self.token = token
+        self.tokens = tokens
         self.mcp = McpServer(board)
         self.secure = False
         port = self.server_address[1]
@@ -313,10 +380,11 @@ class Dashboard:
             )
         self.serve = serve
         self.listen = listen or resolve_listen(serve.bind)
-        self.token = load_token(config)
+        load_token(config)
+        self.tokens = TokenFile(token_path(config))
         try:
             self.http = _HttpServer(
-                (self.listen.address, serve.port), board, self.token, self.listen.hosts,
+                (self.listen.address, serve.port), board, self.tokens, self.listen.hosts,
             )
         except OSError as error:
             raise ServeError(
@@ -356,6 +424,11 @@ class Dashboard:
     @property
     def mcp_url(self) -> str:
         return f"{self.url}mcp"
+
+    @property
+    def token(self) -> str:
+        """The token the server accepts now, after any `token --rotate`."""
+        return self.tokens.current() or ""
 
     @property
     def login_url(self) -> str:

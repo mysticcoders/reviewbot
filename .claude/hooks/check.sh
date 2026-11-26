@@ -30,25 +30,28 @@ fi
 # The fingerprint is the tree git would record for the checked paths as they are on
 # disk: every file's path and content, untracked and deleted files included. It is
 # built in a throwaway copy of the index, so the real index is never touched.
-scratch_index=$(mktemp "${TMPDIR:-/tmp}/reviewbot-stop-hook.XXXXXX") || exit 0
-real_index=$(git rev-parse --git-path index)
-if [ -f "$real_index" ]; then
-  cp "$real_index" "$scratch_index"
-else
+# If it cannot be built, the fingerprint is empty: the checks still run, but an
+# unchanged repeat cannot be recognized, so only MAX_BLOCKS ends the blocking.
+fingerprint=""
+if scratch_index=$(mktemp "${TMPDIR:-/tmp}/reviewbot-stop-hook.XXXXXX" 2>/dev/null); then
+  real_index=$(git rev-parse --git-path index)
+  if [ -f "$real_index" ]; then
+    cp "$real_index" "$scratch_index"
+  else
+    rm -f "$scratch_index"
+  fi
+  # shellcheck disable=SC2086
+  fingerprint=$(
+    GIT_INDEX_FILE="$scratch_index" git add -A -- $PATHS >/dev/null 2>&1 &&
+      GIT_INDEX_FILE="$scratch_index" git write-tree 2>/dev/null
+  )
   rm -f "$scratch_index"
 fi
-# shellcheck disable=SC2086
-fingerprint=$(
-  GIT_INDEX_FILE="$scratch_index" git add -A -- $PATHS >/dev/null 2>&1 &&
-    GIT_INDEX_FILE="$scratch_index" git write-tree 2>/dev/null
-)
-rm -f "$scratch_index"
-[ -n "$fingerprint" ] || fingerprint="unknown-$(date +%s)"
 
 blocks=0
 if [ -f "$state" ]; then
   read -r last_fingerprint blocks < "$state" || true
-  if [ "${last_fingerprint:-}" = "$fingerprint" ]; then
+  if [ -n "$fingerprint" ] && [ "${last_fingerprint:-}" = "$fingerprint" ]; then
     rm -f "$state"
     exit 0
   fi
@@ -71,7 +74,7 @@ if [ "$status" -eq 0 ]; then
 fi
 
 mkdir -p "$state_dir"
-printf '%s %s\n' "$fingerprint" "$((blocks + 1))" > "$state"
+printf '%s %s\n' "${fingerprint:--}" "$((blocks + 1))" > "$state"
 {
   echo "just check failed. Fix it before finishing. If it cannot pass, explain why and stop"
   echo "again without changing src, tests, pyproject.toml, uv.lock or justfile."

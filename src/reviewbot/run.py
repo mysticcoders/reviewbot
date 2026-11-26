@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -13,13 +14,7 @@ from pathlib import Path
 from . import config as cfg
 from .config import Config, ConfigError
 from .github import QueueStatus, ReviewCandidate
-from .launch import (
-    LaunchError,
-    LaunchResult,
-    prepare_checkout,
-    render_prompt,
-    run_command,
-)
+from .launch import LaunchError, LaunchResult, prepare_checkout, render_prompt
 from .multiplexer import open_session, prompt_and_wait, send_prompt
 
 ROLE_TITLES = {
@@ -28,7 +23,7 @@ ROLE_TITLES = {
     "challenge": "Rebuttal",
     "verdict": "Verdict",
 }
-OUTPUT_DIRS = (".reviewbot", ".reviewbot-output", ".reviewbot-runs")
+OUTPUT_PREFIX = ".reviewbot-"
 
 
 @dataclass(frozen=True)
@@ -169,29 +164,25 @@ def _claim_run_dir(config: Config, candidate: ReviewCandidate, launcher: str) ->
     raise LaunchError(f"could not create a run directory for {base}")
 
 
-def _tracked(checkout: Path, name: str) -> bool:
-    """Whether git tracks anything at `name` in the checkout; False outside a git checkout."""
-    try:
-        return bool(run_command("git", "-C", str(checkout), "ls-files", "--", name))
-    except LaunchError:
-        return False
+def claim_output_dir(checkout: Path, run: str) -> str:
+    """Create this run's folder in the checkout, where agents write their reviews.
 
-
-def output_root(checkout: Path) -> str:
-    """The folder in the checkout where agents write reviews: one the PR does not use.
-
-    `.reviewbot` unless the PR tracks something by that name, or has a file there;
-    then the next name in OUTPUT_DIRS. The folder ignores itself with its own
-    `.gitignore`, so the checkout shows no changes to tracked files.
+    The folder is `.reviewbot-<run>`, made with an exclusive create, so it cannot be
+    anything the PR already has, whatever the letter case on a case-insensitive
+    filesystem; a name that is taken gets a random suffix. Git tracks only files, so a
+    folder that did not exist holds nothing tracked. It ignores itself with its own
+    `.gitignore`, so the checkout never shows changes.
     """
-    for name in OUTPUT_DIRS:
-        path = checkout / name
-        if path.exists() and not path.is_dir():
+    name = f"{OUTPUT_PREFIX}{run}"
+    for _ in range(100):
+        try:
+            (checkout / name).mkdir()
+        except FileExistsError:
+            name = f"{OUTPUT_PREFIX}{run}-{secrets.token_hex(3)}"
             continue
-        if _tracked(checkout, name):
-            continue
+        (checkout / name / ".gitignore").write_text("*\n", encoding="utf-8")
         return name
-    raise RunFailed(f"the PR uses every review output folder name: {', '.join(OUTPUT_DIRS)}")
+    raise RunFailed(f"could not create a review folder in {checkout}")
 
 
 def _candidate_dict(candidate: ReviewCandidate) -> dict:
@@ -347,12 +338,7 @@ def execute(run_dir: Path) -> None:
         sessions: dict[str, str] = dict(spec["sessions"])
         phases = plan(config, launcher)
         steps = [step for phase in phases for step in phase]
-        root = output_root(checkout)
-        out_dir = checkout / root / run_dir.name
-        out_dir.mkdir(parents=True, exist_ok=True)
-        ignore = checkout / root / ".gitignore"
-        if not ignore.exists():
-            ignore.write_text("*\n", encoding="utf-8")
+        root = claim_output_dir(checkout, run_dir.name)
         outputs: dict[int, str] = {}
         state["status"] = "running"
         _write_state(run_dir, state)
@@ -368,7 +354,7 @@ def execute(run_dir: Path) -> None:
             _write_state(run_dir, state)
 
             def run_step(step: Step) -> str:
-                relative = f"{root}/{run_dir.name}/{step.filename}"
+                relative = f"{root}/{step.filename}"
                 prompt = step_prompt(config, launcher, candidate, step, steps, outputs, relative)
                 return _collect(config, sessions[step.agent], prompt, checkout / relative)
 

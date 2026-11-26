@@ -186,7 +186,7 @@ def test_combat_runs_in_background_and_saves_every_review(tmp_path, monkeypatch)
         "launcher", "step", "agent", "kind", "role", "round", "saved_at", "path",
     ]
     assert saved.endswith("rb-j saw [('a', '1'), ('b', '2'), ('a', '3')]\n")
-    assert (tmp_path / "checkout" / ".reviewbot" / ".gitignore").read_text() == "*\n"
+    assert (tmp_path / "checkout" / f".reviewbot-{run_dir.name}" / ".gitignore").read_text() == "*\n"
 
 
 def test_output_alone_uses_runner_for_a_single_agent(tmp_path, monkeypatch):
@@ -250,16 +250,30 @@ def test_a_pr_that_tracks_reviewbot_is_left_unchanged_and_still_reviewed(tmp_pat
     _, run_dir = start(tmp_path, monkeypatch, config, "a", fake, checkout)
     run.execute(run_dir)
     assert run.read_state(run_dir)["status"] == "done"
-    assert f".reviewbot-output/{run_dir.name}/01-a-review.md" in fake.prompts[0][1]
+    assert f".reviewbot-{run_dir.name}/01-a-review.md" in fake.prompts[0][1]
     assert (checkout / ".reviewbot" / ".gitignore").read_text() == "!keep\n"
     assert git_status(checkout) == ""
 
 
-def test_a_file_named_reviewbot_moves_the_output_folder(tmp_path):
-    checkout = git_checkout(tmp_path / "checkout", {"README": "x"})
-    (checkout / ".reviewbot").write_text("not a folder", encoding="utf-8")
-    assert run.output_root(checkout) == ".reviewbot-output"
-    assert run.output_root(tmp_path) == ".reviewbot"
+def test_the_output_folder_never_reuses_anything_the_pr_has(tmp_path):
+    run_name = "acme-demo-12-20261125T101500Z-a"
+    checkout = git_checkout(tmp_path / "checkout", {
+        f".REVIEWBOT-{run_name.upper()}/tracked.md": "theirs\n",
+    })
+    (checkout / f".reviewbot-{run_name}-taken").write_text("a file", encoding="utf-8")
+    name = run.claim_output_dir(checkout, run_name)
+    assert sorted(p.name for p in (checkout / name).iterdir()) == [".gitignore"]
+    assert (checkout / f".REVIEWBOT-{run_name.upper()}" / "tracked.md").read_text() == "theirs\n"
+    assert run.claim_output_dir(checkout, run_name) != name
+    assert git_status(checkout) == "?? .reviewbot-acme-demo-12-20261125T101500Z-a-taken\n"
+
+
+def test_running_out_of_folder_names_fails_the_run_clearly(tmp_path, monkeypatch):
+    (tmp_path / ".reviewbot-r").mkdir()
+    (tmp_path / ".reviewbot-r-aaaaaa").mkdir()
+    monkeypatch.setattr(run.secrets, "token_hex", lambda size: "aaaaaa")
+    with pytest.raises(run.RunFailed, match="could not create a review folder"):
+        run.claim_output_dir(tmp_path, "r")
 
 
 def test_launches_in_the_same_second_get_their_own_run_dirs(tmp_path, monkeypatch):

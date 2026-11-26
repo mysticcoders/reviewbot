@@ -15,7 +15,7 @@ The plan is a list of phases. The steps in one phase run at the same time. For e
 
 ## Where reviews are written
 
-Each prompt tells the agent to write its review to `.reviewbot/<run>/` in the worktree. That directory contains a `.gitignore` that ignores everything in it, so Git ignores it. If the PR itself tracks something named `.reviewbot`, or has a file there, ReviewBot uses `.reviewbot-output` instead (or `.reviewbot-runs`), so the checkout never shows changes to tracked files.
+Each prompt tells the agent to write its review to a new folder in the worktree, `.reviewbot-<run>/`. The runner creates that folder itself, and the create fails if anything is already there in any letter case, so it can never be something the PR has; a taken name gets a random suffix. The folder contains a `.gitignore` that ignores everything in it, so the checkout never shows changes to tracked files.
 
 If an agent ends its turn without writing the review, the runner reminds it once. If the review is still missing or empty, the runner stops the run and marks it failed.
 

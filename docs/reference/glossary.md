@@ -81,13 +81,13 @@ Words that ReviewBot's code and docs use with one specific meaning. Where a word
 : A list of PRs in the watched repositories: **Review requests**, the open PRs that request your review, or **My PRs**, your own open PRs. The TUI shows each in a tab, beside a third tab of notifications.
 
 **Notification**
-: An unread GitHub notification about a PR or issue in the watched repositories, shown in the TUI's Notifications tab, on the dashboard, and through MCP. Opening one or marking it read changes only your read state on GitHub.
+: An unread GitHub notification about a PR or issue in the watched repositories, shown in the TUI's Notifications tab, on the dashboard, and through MCP. In the TUI and on the dashboard, opening one also marks it read; through MCP, `open_pr` only opens it and `mark_notification_read` marks it. Marking read changes only your read state on GitHub.
 
 **Queue status**
 : The one word that sums up a PR's state in a queue, such as `ready`, `updated` or `in-progress` for a review request, and `re-review` or `waiting` for one of yours. See [Queue statuses](statuses.md).
 
 **Actionable**
-: A review request whose status is `ready` or `updated`, so it can be launched. The TUI, the dashboard and `reviewbot next` also leave out a PR that already has a review tab open; `reviewbot launch` does not check for one.
+: A review request whose status is `ready` or `updated`, so it can be launched. A PR that already has a review tab open still shows in the TUI and on the dashboard, as `in-progress`. The TUI won't launch it again, and `reviewbot next` skips it. `reviewbot launch` doesn't check for an open tab on the PR, though the multiplexer still refuses a second tab for the same agent and commit.
 
 ## Prompts
 
@@ -95,7 +95,7 @@ Words that ReviewBot's code and docs use with one specific meaning. Where a word
 : A prompt that ships inside ReviewBot, under `src/reviewbot/_resources/prompts/`. It is the source `reviewbot init` copies from; agents never read it directly.
 
 **Installed prompt** (prompt directory)
-: The copies `reviewbot init` writes into the prompt directory, `~/.config/reviewbot/prompts/` by default. Agents get whatever file the config's `prompt` settings name, rendered with placeholders filled in; with the config `init` writes, that is these copies. Upgrading ReviewBot does not change them, so a change to a bundled template reaches an existing installation only when `init` writes the copy again, after the old one is moved aside. See [Prompts installed by an older version](../how-to/write-prompts.md#prompts-installed-by-an-older-version).
+: The copies `reviewbot init` writes into the prompt directory, `~/.config/reviewbot/prompts/` by default. Agents get whatever file the config's `prompt` settings name, rendered with placeholders filled in; with the config `init` writes, that is these copies. Upgrading ReviewBot does not change them, so a change to a bundled template reaches an existing installation only when its installed copy is refreshed. See [Prompts installed by an older version](../how-to/write-prompts.md#prompts-installed-by-an-older-version).
 
 **Placeholder**
 : A `{name}` in a prompt, such as `{title}` or `{head_sha}`, that ReviewBot fills in when it sends the prompt. Any other `{...}` text is left as it is. See [Prompt templates and placeholders](prompts.md).

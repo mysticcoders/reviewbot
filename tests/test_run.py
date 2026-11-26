@@ -131,18 +131,18 @@ class FakeHerdr:
             path.write_text(f"{agent_name} saw {seen}", encoding="utf-8")
 
 
-def start(tmp_path, monkeypatch, config, launcher, fake):
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
+def start(tmp_path, monkeypatch, config, launcher, fake, checkout=None):
+    checkout = checkout or tmp_path / "checkout"
+    checkout.mkdir(exist_ok=True)
     fake.checkout = checkout
     popen = []
     monkeypatch.setattr(run, "prepare_checkout", lambda c, cand: checkout)
     monkeypatch.setattr(run, "open_session", fake.open_session)
     monkeypatch.setattr(run, "prompt_and_wait", fake.prompt_and_wait)
-    monkeypatch.setattr(run.subprocess, "Popen", lambda *a, **k: popen.append(a))
+    monkeypatch.setattr(run, "_spawn_runner", popen.append)
     results = run.launch_review(config, candidate(), agent=launcher)
     assert len(popen) == 1
-    run_dir = Path(popen[0][0][-1])
+    run_dir = popen[0]
     return results, run_dir
 
 
@@ -171,9 +171,22 @@ def test_combat_runs_in_background_and_saves_every_review(tmp_path, monkeypatch)
         ("a", "challenge", "claude", 3), ("j", "verdict", "gemini", 4),
     ]
     saved = Path(index[3]["path"]).read_text(encoding="utf-8")
-    assert saved.startswith('---\nrepo: "acme/demo"\npr: 12\n')
+    assert saved.startswith('---\nformat: 1\nrepo: "acme/demo"\npr: 12\n')
+    front = dict(
+        line.split(": ", 1) for line in saved.split("---\n")[1].strip().splitlines()
+    )
+    assert {key: json.loads(value) for key, value in front.items()} == {
+        key: value for key, value in index[3].items() if key != "path"
+    }
+    assert (index[3]["format"], index[3]["author"], index[3]["base_branch"]) == (
+        1, "author", "main",
+    )
+    assert list(index[3]) == [
+        "format", "repo", "pr", "url", "title", "author", "base_branch", "head_sha", "run",
+        "launcher", "step", "agent", "kind", "role", "round", "saved_at", "path",
+    ]
     assert saved.endswith("rb-j saw [('a', '1'), ('b', '2'), ('a', '3')]\n")
-    assert (tmp_path / "checkout" / ".reviewbot" / ".gitignore").read_text() == "*\n"
+    assert (tmp_path / "checkout" / f".reviewbot-{run_dir.name}" / ".gitignore").read_text() == "*\n"
 
 
 def test_output_alone_uses_runner_for_a_single_agent(tmp_path, monkeypatch):
@@ -205,3 +218,90 @@ def test_plain_launch_without_output_sends_prompts_directly(tmp_path, monkeypatc
     monkeypatch.setattr(run.subprocess, "Popen", lambda *a, **k: pytest.fail("runner started"))
     run.launch_review(config, candidate(), agent="pair")
     assert sent == [("rb-a", "REVIEW acme/demo#12 by a"), ("rb-b", "REVIEW acme/demo#12 by b")]
+
+
+def git_checkout(path: Path, files: dict[str, str]) -> Path:
+    """A real git checkout whose PR tracks `files`."""
+    import subprocess
+
+    path.mkdir()
+    for name, text in files.items():
+        (path / name).parent.mkdir(parents=True, exist_ok=True)
+        (path / name).write_text(text, encoding="utf-8")
+    for args in (["init", "-q"], ["add", "-A"],
+                 ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "pr"]):
+        subprocess.run(["git", "-C", str(path), *args], check=True)
+    return path
+
+
+def git_status(path: Path) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True,
+        check=True,
+    ).stdout
+
+
+def test_a_pr_that_tracks_reviewbot_is_left_unchanged_and_still_reviewed(tmp_path, monkeypatch):
+    config = make_config(tmp_path, output=True)
+    checkout = git_checkout(tmp_path / "checkout", {".reviewbot/.gitignore": "!keep\n"})
+    fake = FakeHerdr()
+    _, run_dir = start(tmp_path, monkeypatch, config, "a", fake, checkout)
+    run.execute(run_dir)
+    assert run.read_state(run_dir)["status"] == "done"
+    assert f".reviewbot-{run_dir.name}/01-a-review.md" in fake.prompts[0][1]
+    assert (checkout / ".reviewbot" / ".gitignore").read_text() == "!keep\n"
+    assert git_status(checkout) == ""
+
+
+def test_the_output_folder_never_reuses_anything_the_pr_has(tmp_path):
+    run_name = "acme-demo-12-20261125T101500Z-a"
+    checkout = git_checkout(tmp_path / "checkout", {
+        f".REVIEWBOT-{run_name.upper()}/tracked.md": "theirs\n",
+    })
+    (checkout / f".reviewbot-{run_name}-taken").write_text("a file", encoding="utf-8")
+    name = run.claim_output_dir(checkout, run_name)
+    assert sorted(p.name for p in (checkout / name).iterdir()) == [".gitignore"]
+    assert (checkout / f".REVIEWBOT-{run_name.upper()}" / "tracked.md").read_text() == "theirs\n"
+    assert run.claim_output_dir(checkout, run_name) != name
+    assert git_status(checkout) == "?? .reviewbot-acme-demo-12-20261125T101500Z-a-taken\n"
+
+
+def test_running_out_of_folder_names_fails_the_run_clearly(tmp_path, monkeypatch):
+    (tmp_path / ".reviewbot-r").mkdir()
+    (tmp_path / ".reviewbot-r-aaaaaa").mkdir()
+    monkeypatch.setattr(run.secrets, "token_hex", lambda size: "aaaaaa")
+    with pytest.raises(run.RunFailed, match="could not create a review folder"):
+        run.claim_output_dir(tmp_path, "r")
+
+
+def test_launches_in_the_same_second_get_their_own_run_dirs(tmp_path, monkeypatch):
+    from datetime import datetime as real_datetime
+
+    class Frozen(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime(2026, 11, 25, 10, 15, 0, tzinfo=tz)
+
+    monkeypatch.setattr(run, "datetime", Frozen)
+    config = make_config(tmp_path, output=True)
+    first = run._claim_run_dir(config, candidate(), "a")
+    second = run._claim_run_dir(config, candidate(), "a")
+    other = run._claim_run_dir(config, candidate(), "pair")
+    assert first.name == "acme-demo-12-20261125T101500Z-a"
+    assert second.name == "acme-demo-12-20261125T101500Z-a-2"
+    assert other.name == "acme-demo-12-20261125T101500Z-pair"
+
+
+def test_a_tab_that_fails_to_open_leaves_no_run_dir(tmp_path, monkeypatch):
+    config = make_config(tmp_path, output=True)
+
+    def refuse(*args, **kwargs):
+        raise run.LaunchError("no multiplexer")
+
+    monkeypatch.setattr(run, "prepare_checkout", lambda c, cand: tmp_path)
+    monkeypatch.setattr(run, "open_session", refuse)
+    with pytest.raises(run.LaunchError):
+        run.launch_review(config, candidate(), agent="a")
+    assert list((config.work_dir / "runs").iterdir()) == []

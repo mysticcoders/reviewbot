@@ -32,6 +32,7 @@ Exact facts: settings, commands, keys, statuses.
 - [Queue statuses](reference/statuses.md)
 - [Prompt templates and placeholders](reference/prompts.md)
 - [MCP tools](reference/mcp-tools.md)
+- [Saved reviews](reference/saved-reviews.md)
 
 ## Explanation
 

@@ -6,7 +6,7 @@
 
 | Template | Use |
 | --- | --- |
-| `review.md` | A general review: test coverage, correctness, security and regressions. |
+| `review.md` | A general review: test coverage, correctness, security and regressions. It ends with **Recurring patterns**: findings likely to happen again, each with a proposed lint rule, check or test. See [Saved reviews](saved-reviews.md#recurring-patterns). |
 | `tests.md` | Test coverage only. |
 | `security.md` | Security only. |
 | `walkthrough.md` | A combat `opener_prompt`: what the PR does, what it gets right, where to look. |

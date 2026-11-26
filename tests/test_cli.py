@@ -23,6 +23,9 @@ def test_init_writes_watch_agents_and_prompt(tmp_path, monkeypatch):
         ("claude", "claude", "c"), ("gemini", "gemini", None),
     ]
     assert "{key}" in config.agents[0].prompt_template()
+    assert config.output is not None
+    assert config.output.dir == Path("~/reviewbot-reviews").expanduser()
+    assert "Recurring patterns" in config.agents[0].prompt_template()
 
 
 def test_init_prompts_for_watch_and_writes_no_agents(tmp_path, monkeypatch):

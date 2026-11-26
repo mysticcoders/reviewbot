@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -22,7 +23,7 @@ ROLE_TITLES = {
     "challenge": "Rebuttal",
     "verdict": "Verdict",
 }
-OUTPUT_DIR = ".reviewbot"
+OUTPUT_PREFIX = ".reviewbot-"
 
 
 @dataclass(frozen=True)
@@ -143,9 +144,45 @@ def step_prompt(
     return text
 
 
-def _run_id(candidate: ReviewCandidate) -> str:
+def _claim_run_dir(config: Config, candidate: ReviewCandidate, launcher: str) -> Path:
+    """Create this launch's run directory under a name no other launch has.
+
+    The name is `<owner>-<repo>-<n>-<UTC time>-<launcher>`, with `-2`, `-3`, ... added
+    when two launches of the same launcher on the same PR land in the same second.
+    """
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return f"{candidate.repo.replace('/', '-')}-{candidate.number}-{stamp}"
+    base = f"{candidate.repo.replace('/', '-')}-{candidate.number}-{stamp}-{launcher}"
+    root = config.work_dir / "runs"
+    root.mkdir(parents=True, exist_ok=True)
+    for attempt in range(1, 1000):
+        run_dir = root / (base if attempt == 1 else f"{base}-{attempt}")
+        try:
+            run_dir.mkdir()
+        except FileExistsError:
+            continue
+        return run_dir
+    raise LaunchError(f"could not create a run directory for {base}")
+
+
+def claim_output_dir(checkout: Path, run: str) -> str:
+    """Create this run's folder in the checkout, where agents write their reviews.
+
+    The folder is `.reviewbot-<run>`, made with an exclusive create, so it cannot be
+    anything the PR already has, whatever the letter case on a case-insensitive
+    filesystem; a name that is taken gets a random suffix. Git tracks only files, so a
+    folder that did not exist holds nothing tracked. It ignores itself with its own
+    `.gitignore`, so the checkout never shows changes.
+    """
+    name = f"{OUTPUT_PREFIX}{run}"
+    for _ in range(100):
+        try:
+            (checkout / name).mkdir()
+        except FileExistsError:
+            name = f"{OUTPUT_PREFIX}{run}-{secrets.token_hex(3)}"
+            continue
+        (checkout / name / ".gitignore").write_text("*\n", encoding="utf-8")
+        return name
+    raise RunFailed(f"could not create a review folder in {checkout}")
 
 
 def _candidate_dict(candidate: ReviewCandidate) -> dict:
@@ -179,18 +216,22 @@ def launch_review(config: Config, candidate: ReviewCandidate, *, agent: str) -> 
         raise LaunchError(str(error)) from None
 
     checkout = prepare_checkout(config, candidate)
+    run_dir = _claim_run_dir(config, candidate, agent) if background else None
     first = phases[0]
-    results = [
-        open_session(config, candidate, agent=config.agent(step.agent), checkout=checkout)
-        for step in first
-    ]
-    if not background:
+    try:
+        results = [
+            open_session(config, candidate, agent=config.agent(step.agent), checkout=checkout)
+            for step in first
+        ]
+    except BaseException:
+        if run_dir is not None:
+            run_dir.rmdir()
+        raise
+    if run_dir is None:
         for result in results:
             send_prompt(config, result.handle, prompts[result.agent])
         return results
 
-    run_dir = config.work_dir / "runs" / _run_id(candidate)
-    run_dir.mkdir(parents=True)
     (run_dir / "plan.json").write_text(json.dumps({
         "config": str(config.path),
         "launcher": agent,
@@ -203,13 +244,18 @@ def launch_review(config: Config, candidate: ReviewCandidate, *, agent: str) -> 
         "launcher": agent, "status": "starting", "started_at": _now(),
         "steps": [{**_step_summary(step), "status": "pending"} for step in steps],
     })
+    _spawn_runner(run_dir)
+    return results
+
+
+def _spawn_runner(run_dir: Path) -> None:
+    """Start the detached `reviewbot run-plan` process for a run, logging to runner.log."""
     with (run_dir / "runner.log").open("ab") as log:
         subprocess.Popen(
             [sys.executable, "-m", "reviewbot.cli", "run-plan", str(run_dir)],
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-    return results
 
 
 def _now() -> str:
@@ -241,18 +287,27 @@ def list_runs(config: Config) -> list[dict]:
     return sorted((s for s in states if s), key=lambda s: s.get("started_at", ""), reverse=True)
 
 
+SAVED_REVIEW_FORMAT = 1
+
+
 def save_review(
     output: cfg.Output, candidate: ReviewCandidate, run: str, launcher: str,
     step: Step, kind: str, body: str,
 ) -> Path:
-    """Save one review as Markdown with metadata and append it to the index."""
+    """Save one review as Markdown with metadata and append it to the index.
+
+    The layout and fields are documented in docs/reference/saved-reviews.md; `format`
+    changes only when a field changes meaning or is removed.
+    """
     target = (
         output.dir / candidate.repo.replace("/", "-") / f"pr-{candidate.number}" / run
         / step.filename
     )
     meta = {
+        "format": SAVED_REVIEW_FORMAT,
         "repo": candidate.repo, "pr": candidate.number, "url": candidate.url,
-        "title": candidate.title, "head_sha": candidate.head_sha, "run": run,
+        "title": candidate.title, "author": candidate.author,
+        "base_branch": candidate.base_branch, "head_sha": candidate.head_sha, "run": run,
         "launcher": launcher, "step": step.index + 1, "agent": step.agent, "kind": kind,
         "role": step.role, "round": step.round, "saved_at": _now(),
     }
@@ -283,9 +338,7 @@ def execute(run_dir: Path) -> None:
         sessions: dict[str, str] = dict(spec["sessions"])
         phases = plan(config, launcher)
         steps = [step for phase in phases for step in phase]
-        out_dir = checkout / OUTPUT_DIR / run_dir.name
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (checkout / OUTPUT_DIR / ".gitignore").write_text("*\n", encoding="utf-8")
+        root = claim_output_dir(checkout, run_dir.name)
         outputs: dict[int, str] = {}
         state["status"] = "running"
         _write_state(run_dir, state)
@@ -301,7 +354,7 @@ def execute(run_dir: Path) -> None:
             _write_state(run_dir, state)
 
             def run_step(step: Step) -> str:
-                relative = f"{OUTPUT_DIR}/{run_dir.name}/{step.filename}"
+                relative = f"{root}/{step.filename}"
                 prompt = step_prompt(config, launcher, candidate, step, steps, outputs, relative)
                 return _collect(config, sessions[step.agent], prompt, checkout / relative)
 

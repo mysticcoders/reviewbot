@@ -57,10 +57,12 @@ multiplexer = "@MULTIPLEXER@"
 # judge = "codex"                         # merges everything into a verdict
 # judge_prompt = "prompts/verdict.md"
 
-# Optional: save every finished review as Markdown (with metadata) plus an
-# append-only index.jsonl. Without this table, reviews are not saved.
-# [output]
-# dir = "~/reviewbot-reviews"
+# Save every finished review as Markdown with metadata, plus an append-only
+# index.jsonl, for your records and for retrospectives. The format is described in
+# docs/reference/saved-reviews.md. With this table, each launch waits for the agent
+# to write its review to a file. Remove the table to stop saving reviews.
+[output]
+dir = "~/reviewbot-reviews"
 
 # Optional: the dashboard and MCP endpoint (`reviewbot serve`, `reviewbot mcp`,
 # or ctrl+w in the TUI). Every request needs the token from `reviewbot token`.

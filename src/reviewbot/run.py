@@ -241,18 +241,27 @@ def list_runs(config: Config) -> list[dict]:
     return sorted((s for s in states if s), key=lambda s: s.get("started_at", ""), reverse=True)
 
 
+SAVED_REVIEW_FORMAT = 1
+
+
 def save_review(
     output: cfg.Output, candidate: ReviewCandidate, run: str, launcher: str,
     step: Step, kind: str, body: str,
 ) -> Path:
-    """Save one review as Markdown with metadata and append it to the index."""
+    """Save one review as Markdown with metadata and append it to the index.
+
+    The layout and fields are documented in docs/reference/saved-reviews.md; `format`
+    changes only when a field changes meaning or is removed.
+    """
     target = (
         output.dir / candidate.repo.replace("/", "-") / f"pr-{candidate.number}" / run
         / step.filename
     )
     meta = {
+        "format": SAVED_REVIEW_FORMAT,
         "repo": candidate.repo, "pr": candidate.number, "url": candidate.url,
-        "title": candidate.title, "head_sha": candidate.head_sha, "run": run,
+        "title": candidate.title, "author": candidate.author,
+        "base_branch": candidate.base_branch, "head_sha": candidate.head_sha, "run": run,
         "launcher": launcher, "step": step.index + 1, "agent": step.agent, "kind": kind,
         "role": step.role, "round": step.round, "saved_at": _now(),
     }

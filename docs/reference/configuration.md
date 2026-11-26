@@ -20,7 +20,7 @@ key = "c"
 
 # [[groups]] and [[combats]]: see below
 
-[output]                            # optional
+[output]                            # optional; `init` writes it
 dir = "~/reviewbot-reviews"
 
 [serve]                             # optional
@@ -92,7 +92,9 @@ Each `[[combats]]` table defines one combat. See [Run a combat review](../how-to
 
 | Field | Required | Value |
 | --- | --- | --- |
-| `dir` | yes | The directory for saved reviews. See [Save finished reviews](../how-to/save-reviews.md). |
+| `dir` | yes | The directory for saved reviews. See [Save finished reviews](../how-to/save-reviews.md) and, for the file format, [Saved reviews](saved-reviews.md). |
+
+`reviewbot init` writes `[output]` with `dir = "~/reviewbot-reviews"`, so new installations keep their reviews. A config without the table saves nothing.
 
 ## `[serve]`
 

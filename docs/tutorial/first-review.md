@@ -46,6 +46,8 @@ reviewbot init --watch '*' --multiplexer rex   # everything; add agents by hand
 
 `init` writes `~/.config/reviewbot/config.toml`, and the review templates into `~/.config/reviewbot/prompts/`. It does not replace existing files unless you pass `--force`.
 
+The config saves every finished review to `~/reviewbot-reviews/` (the `[output]` table). To change the folder or stop saving, see [Save finished reviews](../how-to/save-reviews.md).
+
 ## 4. Check the setup
 
 ```sh
@@ -83,6 +85,8 @@ ReviewBot checks out the PR in a separate worktree. It opens a new tab and start
 ## 7. Read the review
 
 Go to the new tab and read what the agent finds. ReviewBot does not post anything to GitHub. You decide what to submit, and you submit it yourself.
+
+When the agent finishes, ReviewBot saves its review under `~/reviewbot-reviews/`, and `reviewbot runs` shows where. The review ends with **Recurring patterns**: findings likely to happen again, each with a rule that would catch it.
 
 ## Next steps
 

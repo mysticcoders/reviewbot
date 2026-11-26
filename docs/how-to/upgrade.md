@@ -19,6 +19,13 @@ reviewbot doctor
 
 A release can make a new config setting necessary. Then the old config does not load, and the error names the missing setting. At a terminal, `reviewbot doctor` offers to add it for you. Each such release has a section below.
 
+### Keep reviews for retrospectives
+
+Configs written before `init` turned saving on have no `[output]` table, and prompts installed before the **Recurring patterns** section existed don't ask for it. Neither changes on upgrade. To adopt both:
+
+1. Add `[output]` to `~/.config/reviewbot/config.toml`. See [Save finished reviews](save-reviews.md).
+2. Get the new `review.md` template, as described in [Prompts installed by an older version](write-prompts.md#prompts-installed-by-an-older-version).
+
 ### Upgrade to 0.2
 
 0.2 adds Rex support and makes `multiplexer` a required setting. A config from 0.1 does not load until you add it.

@@ -171,7 +171,20 @@ def test_combat_runs_in_background_and_saves_every_review(tmp_path, monkeypatch)
         ("a", "challenge", "claude", 3), ("j", "verdict", "gemini", 4),
     ]
     saved = Path(index[3]["path"]).read_text(encoding="utf-8")
-    assert saved.startswith('---\nrepo: "acme/demo"\npr: 12\n')
+    assert saved.startswith('---\nformat: 1\nrepo: "acme/demo"\npr: 12\n')
+    front = dict(
+        line.split(": ", 1) for line in saved.split("---\n")[1].strip().splitlines()
+    )
+    assert {key: json.loads(value) for key, value in front.items()} == {
+        key: value for key, value in index[3].items() if key != "path"
+    }
+    assert (index[3]["format"], index[3]["author"], index[3]["base_branch"]) == (
+        1, "author", "main",
+    )
+    assert list(index[3]) == [
+        "format", "repo", "pr", "url", "title", "author", "base_branch", "head_sha", "run",
+        "launcher", "step", "agent", "kind", "role", "round", "saved_at", "path",
+    ]
     assert saved.endswith("rb-j saw [('a', '1'), ('b', '2'), ('a', '3')]\n")
     assert (tmp_path / "checkout" / ".reviewbot" / ".gitignore").read_text() == "*\n"
 

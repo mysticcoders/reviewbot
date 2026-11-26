@@ -4,12 +4,11 @@ import http.client
 import io
 import json
 import stat
-import time
 
 import pytest
 
 from reviewbot.board import Board, OpenError
-from reviewbot.config import ConfigError, load
+from reviewbot.config import FILTERS_TABLE, ConfigError, load
 from reviewbot.github import (
     AuthoredPR,
     AuthoredStatus,
@@ -26,7 +25,9 @@ SERVE = '[serve]\nport = 0\nbind = "localhost"\nbrowser = "Google Chrome"\n'
 
 def write(tmp_path, extra=SERVE):
     path = tmp_path / "config.toml"
-    path.write_text('watch = ["acme"]\nmultiplexer = "rex"\n' + extra, encoding="utf-8")
+    path.write_text(
+        'watch = ["acme"]\nmultiplexer = "rex"\n' + extra + FILTERS_TABLE, encoding="utf-8"
+    )
     return load(path)
 
 
@@ -58,6 +59,11 @@ def note(thread_id="101", number=12, kind="pr"):
         reason="comment", updated_at="2026-11-22T00:00:00Z",
         url=f"https://github.com/acme/demo/{path}/{number}",
     )
+
+
+def no_fetch(view, value):
+    """Refuse to reach GitHub from a test board; its views are seeded by hand."""
+    raise AssertionError(f"test board tried to fetch {view} ({value}) from GitHub")
 
 
 def board(config):
@@ -201,7 +207,7 @@ def test_board_only_resolves_known_prs(tmp_path):
 def dashboard(tmp_path):
     config = write(tmp_path)
     item = board(config)
-    item.queue_at = item.mine_at = item.notes_at = time.time() + 3600
+    item._fetch = no_fetch
     server = Dashboard(config, item, listen=Listen("127.0.0.1", ("127.0.0.1", "localhost"), "127.0.0.1"))
     server.start()
     yield server
@@ -278,8 +284,8 @@ def test_http_mcp_lists_tools_and_queue(dashboard):
     _, data = mcp(dashboard, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     names = [tool["name"] for tool in json.loads(data)["result"]["tools"]]
     assert names == [
-        "list_review_queue", "list_my_prs", "list_notifications", "mark_notification_read",
-        "open_pr",
+        "list_open_prs", "list_review_queue", "list_my_prs", "list_notifications",
+        "mark_notification_read", "open_pr",
     ]
     _, data = mcp(dashboard, {
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -291,7 +297,7 @@ def test_http_mcp_lists_tools_and_queue(dashboard):
 
 def test_open_pr_opens_only_known_prs(tmp_path, monkeypatch):
     item = board(write(tmp_path))
-    item.queue_at = item.mine_at = item.notes_at = time.time() + 3600
+    item._fetch = no_fetch
     opened = []
     server = McpServer(item, opener=opened.append)
 
@@ -331,7 +337,7 @@ def test_snapshot_lists_notifications_and_opens_them(tmp_path):
 
 def test_mcp_marks_only_known_notifications_read(tmp_path, marked):
     item = board(write(tmp_path))
-    item.queue_at = item.mine_at = item.notes_at = time.time() + 3600
+    item._fetch = no_fetch
     server = McpServer(item, opener=lambda url: None)
 
     def call(name, arguments):

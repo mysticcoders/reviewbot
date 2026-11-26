@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from reviewbot.config import (
+    FILTERS_TABLE,
     Agent,
     Checkout,
     ConfigError,
@@ -41,10 +42,14 @@ key = "b"
 '''
 
 
-def write_config(tmp_path: Path, text: str, multiplexer: str | None = "herdr") -> Path:
+def write_config(
+    tmp_path: Path, text: str, multiplexer: str | None = "herdr", filters: bool = True,
+) -> Path:
     path = tmp_path / "config.toml"
     if multiplexer:
         text = f'multiplexer = "{multiplexer}"\n' + text
+    if filters:
+        text = text.rstrip("\n") + "\n" + FILTERS_TABLE
     path.write_text(text, encoding="utf-8")
     return path
 

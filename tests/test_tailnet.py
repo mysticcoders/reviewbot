@@ -11,7 +11,7 @@ from click.testing import CliRunner
 from reviewbot import cli
 from reviewbot import config as cfg
 from reviewbot.board import Board
-from reviewbot.config import ConfigError, load
+from reviewbot.config import FILTERS_TABLE, ConfigError, load
 from reviewbot.server import Dashboard
 from reviewbot.tailnet import Node, TailnetError, known_dns, state_dir
 
@@ -21,7 +21,9 @@ DNS = "reviewbot-test.tail1234.ts.net"
 
 def write(tmp_path, serve=NODE):
     path = tmp_path / "config.toml"
-    path.write_text('watch = ["acme"]\nmultiplexer = "rex"\n' + serve, encoding="utf-8")
+    path.write_text(
+        'watch = ["acme"]\nmultiplexer = "rex"\n' + serve + FILTERS_TABLE, encoding="utf-8"
+    )
     return load(path)
 
 

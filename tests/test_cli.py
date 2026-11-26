@@ -63,7 +63,7 @@ def test_init_explains_an_existing_invalid_config(tmp_path, monkeypatch):
 
 def test_init_says_flags_were_not_applied_to_an_existing_valid_config(tmp_path, monkeypatch):
     (tmp_path / "config.toml").write_text(
-        'watch = ["*"]\nmultiplexer = "herdr"\n', encoding="utf-8"
+        'watch = ["*"]\nmultiplexer = "herdr"\n' + cfg.FILTERS_TABLE, encoding="utf-8"
     )
     result = run(tmp_path, monkeypatch, "init", "-w", "acme", "--multiplexer", "herdr")
     assert result.exit_code == 0
@@ -114,6 +114,7 @@ def doctor(tmp_path, monkeypatch, stdin: str):
 def test_doctor_adds_a_missing_herdr_multiplexer_and_keeps_a_backup(tmp_path, monkeypatch):
     result = doctor(tmp_path, monkeypatch, "y\nherdr\n")
     assert "has no `multiplexer`" in result.output
+    assert "added a [filters] table" in result.output
     assert "updated" in result.output
     text = (tmp_path / "config.toml").read_text(encoding="utf-8")
     assert text.index('multiplexer = "herdr"') < text.index("# Review agents.")
@@ -121,6 +122,9 @@ def test_doctor_adds_a_missing_herdr_multiplexer_and_keeps_a_backup(tmp_path, mo
     config = cfg.load(tmp_path / "config.toml")
     assert config.multiplexer == "herdr"
     assert [a.command for a in config.agents] == [None, None]
+    assert (config.filters.open, config.filters.mine, config.filters.stale_days) == (
+        "requested", "all", 14,
+    )
 
 
 def test_doctor_switching_to_rex_adds_each_agents_command(tmp_path, monkeypatch):
@@ -152,7 +156,8 @@ def test_token_urls_follow_the_bind_and_port_overrides(tmp_path, monkeypatch):
 
     (tmp_path / "config.toml").write_text(
         'watch = ["acme"]\nmultiplexer = "rex"\n'
-        '[serve]\nport = 8765\nbind = "localhost"\nbrowser = "Google Chrome"\n',
+        '[serve]\nport = 8765\nbind = "localhost"\nbrowser = "Google Chrome"\n'
+        + cfg.FILTERS_TABLE,
         encoding="utf-8",
     )
     binds = []

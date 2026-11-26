@@ -19,7 +19,7 @@ from rich.table import Table
 
 from . import __version__
 from . import config as cfg
-from .github import GhError, ReviewCandidate, authored_prs, review_queue
+from .github import GhError, ReviewCandidate, my_prs, one_pr, open_prs
 from .launch import LaunchError
 from .multiplexer import active_review_keys
 from .run import collects, execute, launch_review, list_runs
@@ -64,9 +64,9 @@ def scope_options(command):
     )(command)
 
 
-def _queue(config: cfg.Config) -> list[ReviewCandidate]:
+def _queue(config: cfg.Config, view: str) -> list[ReviewCandidate]:
     try:
-        return asyncio.run(review_queue(config.scope))
+        return asyncio.run(open_prs(config.scope, view, config.filters.stale_days))
     except (GhError, OSError) as error:
         raise click.ClickException(f"GitHub query failed: {error}") from None
 
@@ -407,12 +407,15 @@ def run_plan_command(run_dir: Path) -> None:
 
 @cli.command("status")
 @scope_options
-def status_command(watch: tuple[str, ...], watch_all: bool) -> None:
-    """List PRs currently requesting your review."""
+@click.option("--filter", "view", type=click.Choice(cfg.OPEN_FILTERS),
+              help="Use this filter instead of the configured `open`.")
+def status_command(watch: tuple[str, ...], watch_all: bool, view: str | None) -> None:
+    """List open PRs, by the configured `open` filter or --filter."""
     config = _load(watch, watch_all)
-    candidates = _queue(config)
+    view = view or config.filters.open
+    candidates = _queue(config, view)
     active = active_review_keys(config, candidates)
-    table = Table(title=f"Review requests in {config.scope.describe()}")
+    table = Table(title=f"Open PRs ({view}) in {config.scope.describe()}")
     for heading in ("Status", "PR", "Checks", "Request", "Author", "Title"):
         table.add_column(heading)
     for candidate in candidates:
@@ -424,26 +427,29 @@ def status_command(watch: tuple[str, ...], watch_all: bool) -> None:
         )
     Console().print(table)
     actionable = sum(candidate.actionable for candidate in candidates)
-    click.echo(f"{actionable} actionable of {len(candidates)} current request(s)")
+    click.echo(f"{actionable} actionable of {len(candidates)} open PR(s)")
 
 
 @cli.command("mine")
 @scope_options
-def mine_command(watch: tuple[str, ...], watch_all: bool) -> None:
-    """List your open PRs with review, check, and reviewer status."""
+@click.option("--filter", "view", type=click.Choice(cfg.MINE_FILTERS),
+              help="Use this filter instead of the configured `mine`.")
+def mine_command(watch: tuple[str, ...], watch_all: bool, view: str | None) -> None:
+    """List open PRs you authored or are assigned to, with review, check, and reviewer status."""
     config = _load(watch, watch_all)
+    view = view or config.filters.mine
     try:
-        prs = asyncio.run(authored_prs(config.scope))
+        prs = asyncio.run(my_prs(config.scope, view, config.filters.stale_days))
     except (GhError, OSError) as error:
         raise click.ClickException(f"GitHub query failed: {error}") from None
-    table = Table(title=f"Your open PRs in {config.scope.describe()}")
-    for heading in ("Status", "PR", "Checks", "Reviewers", "Title"):
+    table = Table(title=f"Your open PRs ({view}) in {config.scope.describe()}")
+    for heading in ("Status", "PR", "Checks", "Role", "Reviewers", "Title"):
         table.add_column(heading)
     for pr in prs:
         reviewers = "\n".join(f"{r.name} ({r.label})" for r in pr.reviewers) or "none"
         table.add_row(
             pr.status.value, f"{config.scope.label(pr.repo)}#{pr.number}",
-            pr.checks, reviewers, pr.title,
+            pr.checks, pr.role_label, reviewers, pr.title,
         )
     Console().print(table)
     needing = sum(bool(pr.rerequest_targets) for pr in prs)
@@ -457,11 +463,11 @@ def mine_command(watch: tuple[str, ...], watch_all: bool) -> None:
 def next_command(
     agent: str | None, yes: bool, watch: tuple[str, ...], watch_all: bool
 ) -> None:
-    """Show the next actionable PR and optionally launch its review."""
+    """Show the next actionable PR requesting your review, and optionally launch its review."""
     config = _load(watch, watch_all)
     if agent is not None:
         _require_agent(config, agent)
-    queue = _queue(config)
+    queue = _queue(config, "requested")
     active = active_review_keys(config, queue)
     candidates = [
         candidate for candidate in queue
@@ -484,16 +490,17 @@ def next_command(
 @click.argument("target")
 @click.option("--agent", required=True, help="Agent or group name from the config.")
 def launch_command(target: str, agent: str) -> None:
-    """Launch a requested PR, identified as OWNER/REPO#NUMBER or its URL."""
+    """Launch a review of an open PR, identified as OWNER/REPO#NUMBER or its URL."""
     normalized = target.removeprefix("https://github.com/").replace("/pull/", "#").rstrip("/")
     repo, _, number = normalized.partition("#")
     if repo.count("/") != 1 or not number.isdigit():
         raise click.ClickException(f"{target} is not OWNER/REPO#NUMBER or a PR URL")
     config = _load((repo,))
     _require_agent(config, agent)
-    candidate = next((item for item in _queue(config) if item.key == normalized), None)
-    if candidate is None:
-        raise click.ClickException(f"{target} is not in your current review-request queue")
+    try:
+        candidate = asyncio.run(one_pr(repo, int(number)))
+    except (GhError, OSError) as error:
+        raise click.ClickException(str(error)) from None
     _print_candidate(candidate)
     _do_launch(config, candidate, agent)
 

@@ -74,8 +74,9 @@ section h2 {
   padding: 12px 14px;
   border-bottom: 1px solid var(--line);
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  align-items: baseline;
+  align-items: center;
 }
 section h2 .count { color: var(--muted); font-weight: normal; }
 .tabs {
@@ -107,6 +108,16 @@ section h2 .count { color: var(--muted); font-weight: normal; }
 }
 .tab .count:empty { display: none; }
 [role="tabpanel"][hidden] { display: none; }
+.filter { margin-left: auto; display: flex; gap: 6px; align-items: center; font-size: 13px; font-weight: normal; color: var(--muted); }
+.filter select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  min-height: 32px;
+}
 .error { color: var(--bad); padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .empty { color: var(--muted); padding: 14px; }
 ul { list-style: none; margin: 0; padding: 0; }
@@ -154,20 +165,20 @@ button.mark { font-size: 12px; padding: 1px 8px; white-space: nowrap; }
 </header>
 <main>
   <div class="tabs" role="tablist" aria-label="Views">
-    <button class="tab" type="button" role="tab" id="tab-queue" title="Review requests (1)" aria-keyshortcuts="1" aria-controls="panel-queue" aria-selected="true">Review requests<span class="count" id="queue-count"></span></button>
+    <button class="tab" type="button" role="tab" id="tab-queue" title="Open PRs (1)" aria-keyshortcuts="1" aria-controls="panel-queue" aria-selected="true">Open PRs<span class="count" id="queue-count"></span></button>
     <button class="tab" type="button" role="tab" id="tab-mine" title="My PRs (2)" aria-keyshortcuts="2" aria-controls="panel-mine" aria-selected="false" tabindex="-1">My PRs<span class="count" id="mine-count"></span></button>
     <button class="tab" type="button" role="tab" id="tab-notes" title="Notifications (3)" aria-keyshortcuts="3" aria-controls="panel-notes" aria-selected="false" tabindex="-1">Notifications<span class="count" id="notes-count"></span></button>
   </div>
   <section role="tabpanel" id="panel-queue" aria-labelledby="tab-queue">
-    <h2>Waiting on my review</h2>
+    <h2>Open PRs <label class="filter">Filter <select id="filter-queue"></select></label></h2>
     <div id="queue"></div>
   </section>
   <section role="tabpanel" id="panel-mine" aria-labelledby="tab-mine" hidden>
-    <h2>My open PRs</h2>
+    <h2>PRs you authored or are assigned <label class="filter">Filter <select id="filter-mine"></select></label></h2>
     <div id="mine"></div>
   </section>
   <section role="tabpanel" id="panel-notes" aria-labelledby="tab-notes" hidden>
-    <h2>Unread notifications</h2>
+    <h2>Unread notifications <label class="filter">Filter <select id="filter-notes"></select></label></h2>
     <div id="notes"></div>
   </section>
 </main>
@@ -274,7 +285,8 @@ function render(target, countTarget, items, error, detail) {
 }
 
 function queueDetail(item) {
-  const parts = [`@${item.author}`, `${item.request_source} request`, `updated ${ago(item.updated_at)}`];
+  const request = item.request_source === "none" ? "not requested of you" : `${item.request_source} request`;
+  const parts = [`@${item.author}`, request, `updated ${ago(item.updated_at)}`];
   if (item.last_review_state) {
     parts.push(`you ${item.last_review_state.toLowerCase().replace("_", " ")}, ${item.commits_since_review} newer commit(s)`);
   }
@@ -282,23 +294,88 @@ function queueDetail(item) {
 }
 
 function mineDetail(item) {
-  const parts = [`reviews: ${item.reviewer_summary}`];
+  const roles = item.roles || ["author"];
+  const role = roles.includes("assignee") ? (roles.includes("author") ? "yours, assigned to you" : "assigned to you") : null;
+  const parts = role ? [role, `reviews: ${item.reviewer_summary}`] : [`reviews: ${item.reviewer_summary}`];
   if (item.rerequest.length) parts.push(`re-request ${item.rerequest.join(", ")}`);
   if (item.mergeable) parts.push(item.mergeable.toLowerCase());
   parts.push(`updated ${ago(item.updated_at)}`);
   return parts.join(" · ");
 }
 
+const FILTER_PARAMS = { queue: "open", mine: "mine", notes: "notifications" };
+const VIEW_KEYS = { queue: "queue", mine: "mine", notes: "notifications" };
+const chosenFilters = {};
+try {
+  const params = new URLSearchParams(location.search);
+  for (const [tab, param] of Object.entries(FILTER_PARAMS)) {
+    if (params.get(param)) chosenFilters[tab] = params.get(param);
+  }
+} catch (error) {}
+
+function fillFilters(data) {
+  for (const tab of Object.keys(FILTER_PARAMS)) {
+    const select = document.getElementById(`filter-${tab}`);
+    const view = VIEW_KEYS[tab];
+    const current = data.filters[view];
+    if (select.options.length !== data.choices[view].length) {
+      select.replaceChildren(...data.choices[view].map(value => el("option", { value }, value)));
+    }
+    select.value = current;
+  }
+}
+
+function filterQuery(refresh) {
+  const params = new URLSearchParams();
+  for (const [tab, value] of Object.entries(chosenFilters)) params.set(FILTER_PARAMS[tab], value);
+  if (refresh) params.set("refresh", "1");
+  const text = params.toString();
+  return text ? `?${text}` : "";
+}
+
+for (const tab of Object.keys(FILTER_PARAMS)) {
+  document.getElementById(`filter-${tab}`).addEventListener("change", event => {
+    chosenFilters[tab] = event.target.value;
+    const params = new URLSearchParams();
+    for (const [name, value] of Object.entries(chosenFilters)) params.set(FILTER_PARAMS[name], value);
+    history.replaceState(null, "", `?${params}${location.hash}`);
+    load(false);
+  });
+}
+
+let latestLoad = 0;
+let loading = false;
+
+function clearFilterParams() {
+  for (const tab of Object.keys(chosenFilters)) delete chosenFilters[tab];
+  history.replaceState(null, "", `${location.pathname}${location.hash}`);
+}
+
 async function load(refresh) {
   const button = document.getElementById("refresh");
+  const ticket = ++latestLoad;
+  loading = true;
+  const current = () => ticket === latestLoad;
   button.disabled = true;
   try {
-    const response = await fetch(`/api/prs${refresh ? "?refresh=1" : ""}`, { credentials: "same-origin" });
+    const response = await fetch(`/api/prs${filterQuery(refresh)}`, { credentials: "same-origin" });
+    if (!current()) return;
     if (response.status === 401) {
       document.getElementById("meta").textContent = "Session expired. Reopen the URL from `reviewbot token`.";
       return;
     }
     const data = await response.json();
+    if (!current()) return;
+    if (response.status === 400 && Object.keys(chosenFilters).length) {
+      clearFilterParams();
+      load(refresh);
+      return;
+    }
+    if (!response.ok) {
+      document.getElementById("meta").textContent = data.error || `ReviewBot answered ${response.status}`;
+      return;
+    }
+    fillFilters(data);
     renderNotes(data.notifications, data.errors.notifications);
     render("queue", "queue-count", data.queue, data.errors.queue, queueDetail);
     render("mine", "mine-count", data.mine, data.errors.mine, mineDetail);
@@ -306,9 +383,12 @@ async function load(refresh) {
     const when = Number.isFinite(fetched) ? new Date(fetched * 1000).toLocaleTimeString() : "never";
     document.getElementById("meta").textContent = `${data.scope} · fetched ${when}`;
   } catch (error) {
-    document.getElementById("meta").textContent = `Could not reach ReviewBot: ${error}`;
+    if (current()) document.getElementById("meta").textContent = `Could not reach ReviewBot: ${error}`;
   } finally {
-    button.disabled = false;
+    if (current()) {
+      button.disabled = false;
+      loading = false;
+    }
   }
 }
 
@@ -350,7 +430,9 @@ showTab(location.hash.slice(1), false);
 
 document.getElementById("refresh").addEventListener("click", () => load(true));
 load(false);
-setInterval(() => load(false), POLL_MS);
+setInterval(() => {
+  if (!loading) load(false);
+}, POLL_MS);
 </script>
 </body>
 </html>

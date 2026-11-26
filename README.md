@@ -3,9 +3,11 @@
 ReviewBot is a terminal UI for working through GitHub pull requests that need
 your attention. It shows two queues:
 
-- **Review requests**: open PRs where you (or one of your teams) have been asked
-  to review.
-- **My PRs**: your own open PRs, with checks, conflicts, and per-reviewer status.
+- **Open PRs**: open PRs where you (or one of your teams) have been asked to
+  review, or, with a filter, every PR you are involved in or every open PR in the
+  repositories you watch.
+- **My PRs**: open PRs you authored or are assigned to, with checks, conflicts,
+  and per-reviewer status.
 
 A third tab lists your unread GitHub notifications about PRs and issues in the
 repositories you watch, and marks the PRs in the two queues that have unread

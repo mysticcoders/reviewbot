@@ -17,7 +17,29 @@ reviewbot doctor
 
 ## When a release needs a new setting
 
-A release can make a new config setting necessary. Then the old config does not load, and the error names the missing setting. At a terminal, `reviewbot doctor` offers to add it for you. Each such release has a section below.
+A release can make a new config setting necessary. Each such release has a section below that says what to do: some add the setting to your config themselves, and for others the old config does not load until you add it, the error names the missing setting, and `reviewbot doctor`, at a terminal, offers to add it for you.
+
+### Upgrade to 0.5
+
+0.5 adds filters for each view and requires a `[filters]` table. You don't need to do anything: the first time 0.5 loads a config without the table, it adds it to the end of `config.toml`, set to show the views as they were before. It keeps the previous file as `config.toml.before-0.5`, and prints one line saying so. A config that fails to load for another reason is left alone until that is fixed.
+
+If ReviewBot cannot write the file, it stops with an error instead. Then add this table at the end of `~/.config/reviewbot/config.toml` by hand:
+
+```toml
+[filters]
+open = "requested"
+mine = "all"
+notifications = "all"
+notification_kinds = ["pr", "issue"]
+stale_days = 14
+```
+
+Other changes in 0.5:
+
+- The **Review requests** tab is now **Open PRs**. With `open = "requested"` it shows the same PRs as before.
+- **My PRs** also lists PRs assigned to you, with a **Role** column.
+- `f` is now a TUI key. An agent, group or combat with `key = "f"` must move to another key. The same goes for `3`, which 0.4 took for the Notifications tab.
+- The MCP tool `list_review_queue` is now `list_open_prs`. The old name still works.
 
 ### Keep reviews for retrospectives
 

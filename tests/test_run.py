@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from reviewbot import run
-from reviewbot.config import load
+from reviewbot.config import FILTERS_TABLE, load
 from reviewbot.github import QueueStatus, ReviewCandidate
 from reviewbot.launch import LaunchResult
 
@@ -41,6 +41,7 @@ def make_config(tmp_path: Path, combats: str = "", output: bool = False):
     )
     if output:
         text += f'[output]\ndir = "{tmp_path / "saved"}"\n'
+    text += FILTERS_TABLE
     path = tmp_path / "config.toml"
     path.write_text(text, encoding="utf-8")
     return load(path)

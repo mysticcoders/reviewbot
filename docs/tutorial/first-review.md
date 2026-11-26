@@ -73,7 +73,7 @@ Start or attach to your multiplexer. Then, inside it, run:
 reviewbot tui
 ```
 
-The **Review requests** tab shows the open PRs that ask for your review. Press `2` to see **My PRs**, and `1` to go back.
+The **Open PRs** tab shows the open PRs that ask for your review: the `requested` filter that `init` set in `[filters]`. Press `f` to try another filter, such as `all`. Press `2` to see **My PRs**, and `1` to go back.
 
 ## 6. Launch a review
 

@@ -78,16 +78,19 @@ Words that ReviewBot's code and docs use with one specific meaning. Where a word
 : Which repositories ReviewBot looks at: the owners and `OWNER/REPO` entries in `watch`, or `"*"` for everything the `gh` account can see. `--watch` and `--all` replace it for one run. See [Choose which repositories to watch](../how-to/choose-what-to-watch.md).
 
 **Queue**
-: A list of PRs in the watched repositories: **Review requests**, the open PRs that request your review, or **My PRs**, your own open PRs. The TUI shows each in a tab, beside a third tab of notifications.
+: A list of PRs in the watched repositories: **Open PRs**, which by default are the open PRs that request your review, or **My PRs**, the open PRs you authored or are assigned to. The TUI shows each in a tab, beside a third tab of notifications.
+
+**Filter**
+: What a view shows inside the watched repositories, set in `[filters]`: `open` for Open PRs (`requested`, `involves`, `all` or `stale`), `mine` for My PRs, and `notifications` for the Notifications tab. The config is the only lasting source; `f` in the TUI, the dashboard's Filter menus and the MCP `filter` argument change one for a session. See [Filters](configuration.md#filters).
 
 **Notification**
 : An unread GitHub notification about a PR or issue in the watched repositories, shown in the TUI's Notifications tab, on the dashboard, and through MCP. In the TUI and on the dashboard, opening one also marks it read; through MCP, `open_pr` only opens it and `mark_notification_read` marks it. Marking read changes only your read state on GitHub.
 
 **Queue status**
-: The one word that sums up a PR's state in a queue, such as `ready`, `updated` or `in-progress` for a review request, and `re-review` or `waiting` for one of yours. See [Queue statuses](statuses.md).
+: The one word that sums up a PR's state in a queue, such as `ready`, `updated` or `in-progress` in Open PRs, and `re-review` or `waiting` in My PRs. See [Queue statuses](statuses.md).
 
 **Actionable**
-: A review request whose status is `ready` or `updated`, so it can be launched. A PR that already has a review tab open still shows in the TUI and on the dashboard, as `in-progress`. The TUI won't launch it again, and `reviewbot next` skips it. `reviewbot launch` doesn't check for an open tab on the PR, though the multiplexer still refuses a second tab for the same agent and commit.
+: An Open PRs row whose status is `ready` or `updated`, so it can be launched, whether or not it requests your review. A PR that already has a review tab open still shows in the TUI and on the dashboard, as `in-progress`. The TUI won't launch it again, and `reviewbot next` skips it. `reviewbot launch` doesn't check for an open tab on the PR, though the multiplexer still refuses a second tab for the same agent and commit.
 
 ## Prompts
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any
 
@@ -64,15 +65,19 @@ def _transient(error: GhError) -> bool:
 
 
 async def _run_once(*args: str, timeout: float) -> str:
+    """Run one `gh` command; a timeout or a cancelled caller kills and reaps the process."""
     proc = await asyncio.create_subprocess_exec(
         *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise GhError(f"timed out after {timeout}s: {' '.join(args)}")
+    except (TimeoutError, asyncio.CancelledError) as error:
+        if proc.returncode is None:
+            proc.kill()
+            await asyncio.shield(proc.wait())
+        if isinstance(error, TimeoutError):
+            raise GhError(f"timed out after {timeout}s: {' '.join(args)}") from None
+        raise
     if proc.returncode != 0:
         message = stderr.decode("utf-8", errors="replace").strip()
         raise GhError(message or f"exit {proc.returncode}: {' '.join(args)}")
@@ -113,7 +118,10 @@ def _check_status(checks: list[dict[str, Any]]) -> str:
     return "passing"
 
 
-def _request_source(requests: list[dict[str, Any]], login: str) -> str:
+def _request_source(requests: list[dict[str, Any]], login: str, requested: bool = True) -> str:
+    """How the user was asked to review: `direct`, `team:<slug>`, or `none` when not asked."""
+    if not requested:
+        return "none"
     if any(request.get("login") == login for request in requests):
         return "direct"
     teams = [
@@ -146,16 +154,31 @@ def _classify(
     return status, state, review_sha
 
 
-async def _details(summary: dict[str, Any], login: str) -> ReviewCandidate:
+DETAIL_CONCURRENCY = 8
+
+
+async def _details(
+    summary: dict[str, Any], login: str, requested: bool, gate: asyncio.Semaphore,
+) -> ReviewCandidate:
     repo = summary["repository"]["nameWithOwner"]
     number = summary["number"]
-    raw = await _run(
+    async with gate:
+        raw = await _details_raw(repo, number)
+    return _candidate(repo, number, json.loads(raw), login, requested)
+
+
+async def _details_raw(repo: str, number: int) -> str:
+    return await _run(
         "gh", "pr", "view", str(number), "--repo", repo, "--json",
         "number,title,state,isDraft,headRefOid,headRefName,baseRefName,"
         "reviewDecision,reviewRequests,reviews,statusCheckRollup,commits,"
         "updatedAt,url,author",
     )
-    data = json.loads(raw)
+
+
+def _candidate(
+    repo: str, number: int, data: dict[str, Any], login: str, requested: bool,
+) -> ReviewCandidate:
     status, review_state, review_sha = _classify(
         is_draft=data.get("isDraft", False), head_sha=data.get("headRefOid", ""),
         reviews=data.get("reviews") or [], login=login,
@@ -175,7 +198,7 @@ async def _details(summary: dict[str, Any], login: str) -> ReviewCandidate:
         head_sha=data.get("headRefOid", ""), head_branch=data.get("headRefName", ""),
         base_branch=data.get("baseRefName", ""), is_draft=data.get("isDraft", False),
         review_decision=data.get("reviewDecision", "") or "",
-        request_source=_request_source(data.get("reviewRequests") or [], login),
+        request_source=_request_source(data.get("reviewRequests") or [], login, requested),
         last_review_state=review_state, last_review_sha=review_sha,
         commits_since_review=commits_since,
         checks=_check_status(data.get("statusCheckRollup") or []), status=status,
@@ -192,14 +215,31 @@ def _search_filters(scope: Scope) -> list[list[str]]:
     return filters
 
 
-async def _requested_summaries(filters: list[str]) -> list[dict[str, Any]]:
+OPEN_SEARCH: dict[str, list[str]] = {
+    "requested": ["--review-requested", "@me"],
+    "stale": ["--review-requested", "@me"],
+    "involves": ["--involves", "@me"],
+    "all": [],
+}
+
+
+def stale_cutoff(stale_days: int) -> str:
+    """The date before which a PR with no activity counts as stale."""
+    return (datetime.now(UTC) - timedelta(days=stale_days)).date().isoformat()
+
+
+async def _open_summaries(filters: list[str], person: list[str]) -> list[dict[str, Any]]:
     raw = await _run(
-        "gh", "search", "prs", *filters,
-        "--review-requested", "@me", "--state", "open", "--archived=false",
+        "gh", "search", "prs", *filters, *person,
+        "--state", "open", "--archived=false",
         "--limit", "200", "--sort", "updated", "--order", "desc",
-        "--json", "number,repository",
+        "--json", "number,repository,author",
     )
     return json.loads(raw)
+
+
+async def _requested_summaries(filters: list[str]) -> list[dict[str, Any]]:
+    return await _open_summaries(filters, OPEN_SEARCH["requested"])
 
 
 def _dedupe(items: list[dict[str, Any]], key) -> list[dict[str, Any]]:
@@ -213,18 +253,87 @@ def _dedupe(items: list[dict[str, Any]], key) -> list[dict[str, Any]]:
     return result
 
 
-async def review_queue(scope: Scope) -> list[ReviewCandidate]:
-    """Return open PRs in scope currently requesting the authenticated user's review."""
-    login, *batches = await asyncio.gather(
-        current_login(),
-        *(_requested_summaries(filters) for filters in _search_filters(scope)),
+TEAM_SEARCH_SECONDS = 15.0
+
+
+async def one_pr(repo: str, number: int) -> ReviewCandidate:
+    """Look one PR up directly, for launching it: it must be open and not the user's own.
+
+    A review request naming the user is read from the PR itself, and settles it. Only
+    otherwise is the Open PRs search for the repository asked, to find a request through
+    one of the user's teams; that search is best effort and limited to a few seconds, so
+    if it fails or is slow the PR still launches, marked as not requested.
+    """
+    login, raw = await asyncio.gather(current_login(), _details_raw(repo, number))
+    data = json.loads(raw)
+    state = str(data.get("state") or "").upper()
+    if state != "OPEN":
+        raise GhError(f"{repo}#{number} is {state.lower() or 'not found'}, not open")
+    if (data.get("author") or {}).get("login") == login:
+        raise GhError(f"{repo}#{number} is your own PR")
+    requests = data.get("reviewRequests") or []
+    requested = any(request.get("login") == login for request in requests)
+    if not requested and requests:
+        try:
+            asked = await asyncio.wait_for(
+                _requested_summaries(["--repo", repo]), TEAM_SEARCH_SECONDS,
+            )
+        except (GhError, OSError, TimeoutError):
+            asked = []
+        requested = any(item.get("number") == number for item in asked)
+    return _candidate(repo, number, data, login, requested)
+
+
+def _summary_key(item: dict[str, Any]) -> str:
+    return f"{item['repository']['nameWithOwner']}#{item['number']}".lower()
+
+
+async def open_prs(scope: Scope, view: str, stale_days: int) -> list[ReviewCandidate]:
+    """Open PRs in scope for one Open PRs filter, newest activity first.
+
+    `requested` asks for the user's review; `stale` is the same with no activity for
+    `stale_days`; `involves` is any PR the user is part of; `all` is every open PR in the
+    watched repositories. The last two leave out the user's own PRs, which My PRs shows,
+    and mark the rows that do not request the user's review.
+    """
+    if view not in OPEN_SEARCH:
+        raise GhError(f"unknown Open PRs filter `{view}`")
+    if view == "all" and scope.is_all:
+        raise GhError(
+            'the `all` filter needs owners or repositories in `watch`; with "*" it would '
+            "search every open PR on GitHub"
+        )
+    person = list(OPEN_SEARCH[view])
+    if view == "stale":
+        person += ["--updated", f"<{stale_cutoff(stale_days)}"]
+    filters = _search_filters(scope)
+    asks = [_open_summaries(f, person) for f in filters]
+    if view in ("involves", "all"):
+        asks += [_requested_summaries(f) for f in filters]
+    login, *batches = await asyncio.gather(current_login(), *asks)
+    found = [item for batch in batches[:len(filters)] for item in batch]
+    requested = (
+        {_summary_key(item) for batch in batches[len(filters):] for item in batch}
+        if view in ("involves", "all") else None
     )
     summaries = _dedupe(
-        [item for batch in batches for item in batch],
-        lambda item: f"{item['repository']['nameWithOwner']}#{item['number']}".lower(),
+        [
+            item for item in found
+            if requested is None or (item.get("author") or {}).get("login") != login
+        ],
+        _summary_key,
     )
-    candidates = await asyncio.gather(*(_details(item, login) for item in summaries))
+    gate = asyncio.Semaphore(DETAIL_CONCURRENCY)
+    candidates = await asyncio.gather(*(
+        _details(item, login, requested is None or _summary_key(item) in requested, gate)
+        for item in summaries
+    ))
     return sorted(candidates, key=lambda item: item.updated_at, reverse=True)
+
+
+async def review_queue(scope: Scope) -> list[ReviewCandidate]:
+    """Open PRs in scope currently requesting the authenticated user's review."""
+    return await open_prs(scope, "requested", 1)
 
 
 class AuthoredStatus(str, Enum):
@@ -277,10 +386,21 @@ class AuthoredPR:
     reviewers: list[ReviewerStatus]
     suggested: list[str]
     status: AuthoredStatus
+    roles: tuple[str, ...] = ("author",)
 
     @property
     def key(self) -> str:
         return f"{self.repo}#{self.number}"
+
+    @property
+    def role_label(self) -> str:
+        """`author`, `assignee`, or both, for the My PRs tab."""
+        return ", ".join(self.roles)
+
+    @property
+    def needs_action(self) -> bool:
+        """Changes requested, failing checks, conflicts, no reviewers, or reviewers to ask again."""
+        return self.status in NEEDS_ACTION or bool(self.rerequest_targets)
 
     @property
     def rerequest_targets(self) -> list[str]:
@@ -413,9 +533,16 @@ def _authored_pr(node: dict[str, Any]) -> AuthoredPR:
     )
 
 
-def _authored_queries(scope: Scope) -> list[str]:
+NEEDS_ACTION = {
+    AuthoredStatus.CONFLICTS, AuthoredStatus.CHANGES_REQUESTED, AuthoredStatus.CHECKS_FAILING,
+    AuthoredStatus.NEEDS_REVIEWERS, AuthoredStatus.RE_REVIEW,
+}
+MINE_ROLES = ("author", "assignee")
+
+
+def _authored_queries(scope: Scope, role: str = "author") -> list[str]:
     """GitHub search strings for the user's open PRs, one per owner plus one for listed repos."""
-    base = "is:pr is:open archived:false author:@me sort:updated-desc"
+    base = f"is:pr is:open archived:false {role}:@me sort:updated-desc"
     if scope.is_all:
         return [base]
     queries = [f"{base} user:{owner}" for owner in scope.owners]
@@ -431,15 +558,48 @@ async def _authored_nodes(query: str) -> list[dict[str, Any]]:
     return json.loads(raw).get("data", {}).get("search", {}).get("nodes") or []
 
 
-async def authored_prs(scope: Scope) -> list[AuthoredPR]:
-    """Return open PRs in scope authored by the authenticated user, newest activity first."""
-    batches = await asyncio.gather(*(_authored_nodes(q) for q in _authored_queries(scope)))
-    nodes = _dedupe(
-        [node for batch in batches for node in batch if node.get("number")],
-        lambda node: f"{node['repository']['nameWithOwner']}#{node['number']}".lower(),
-    )
-    prs = [_authored_pr(node) for node in nodes]
+def _keep_mine(pr: AuthoredPR, view: str, cutoff: str) -> bool:
+    if view == "ready":
+        return not pr.is_draft
+    if view == "needs-action":
+        return pr.needs_action
+    if view == "stale":
+        return pr.updated_at[:10] < cutoff
+    return True
+
+
+async def my_prs(scope: Scope, view: str, stale_days: int) -> list[AuthoredPR]:
+    """Open PRs in scope the user authored or is assigned to, for one My PRs filter.
+
+    `all` shows every one; `ready` leaves out drafts; `needs-action` keeps PRs with changes
+    requested, failing checks, conflicts, no reviewers, or reviewers to ask again; `stale`
+    keeps PRs with no activity for `stale_days`.
+    """
+    if view not in ("all", "ready", "needs-action", "stale"):
+        raise GhError(f"unknown My PRs filter `{view}`")
+    queries = [(role, query) for role in MINE_ROLES for query in _authored_queries(scope, role)]
+    batches = await asyncio.gather(*(_authored_nodes(query) for _, query in queries))
+    roles: dict[str, list[str]] = {}
+    nodes: dict[str, dict[str, Any]] = {}
+    for (role, _), batch in zip(queries, batches, strict=True):
+        for node in batch:
+            if not node.get("number"):
+                continue
+            key = f"{node['repository']['nameWithOwner']}#{node['number']}".lower()
+            nodes.setdefault(key, node)
+            if role not in roles.setdefault(key, []):
+                roles[key].append(role)
+    cutoff = stale_cutoff(stale_days) if view == "stale" else ""
+    prs = [
+        pr for key, node in nodes.items()
+        if _keep_mine(pr := replace(_authored_pr(node), roles=tuple(roles[key])), view, cutoff)
+    ]
     return sorted(prs, key=lambda pr: pr.updated_at, reverse=True)
+
+
+async def authored_prs(scope: Scope) -> list[AuthoredPR]:
+    """Open PRs in scope the user authored or is assigned to, newest activity first."""
+    return await my_prs(scope, "all", 1)
 
 
 async def request_reviewers(repo: str, number: int, reviewers: list[str]) -> None:
@@ -496,13 +656,29 @@ def _notification(thread: dict[str, Any]) -> Notification | None:
     )
 
 
-async def notifications(scope: Scope) -> list[Notification]:
-    """Unread notifications about pull requests and issues in watched repositories, newest first."""
-    raw = await _run(
-        "gh", "api", "--paginate", "notifications?per_page=50", "--jq", ".[]",
-    )
+REVIEW_REASONS = {"review_requested", "mention", "team_mention"}
+
+
+async def notifications(
+    scope: Scope, view: str = "all", kinds: tuple[str, ...] = ("pr", "issue"),
+) -> list[Notification]:
+    """Unread notifications in watched repositories for one Notifications filter, newest first.
+
+    `all` keeps every one of `kinds`; `participating` asks GitHub for threads the user takes
+    part in or was mentioned in; `reviews` keeps review requests and mentions.
+    """
+    if view not in ("all", "participating", "reviews"):
+        raise GhError(f"unknown Notifications filter `{view}`")
+    endpoint = "notifications?per_page=50"
+    if view == "participating":
+        endpoint += "&participating=true"
+    raw = await _run("gh", "api", "--paginate", endpoint, "--jq", ".[]")
     threads = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    found = [item for item in map(_notification, threads) if item and scope.contains(item.repo)]
+    found = [
+        item for item in map(_notification, threads)
+        if item and scope.contains(item.repo) and item.kind in kinds
+        and (view != "reviews" or item.reason in REVIEW_REASONS)
+    ]
     return sorted(found, key=lambda item: item.updated_at, reverse=True)
 
 

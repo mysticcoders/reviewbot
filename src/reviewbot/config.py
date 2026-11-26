@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
+import os
 import re
+import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -10,7 +14,7 @@ from pathlib import Path
 CONFIG_DIR = Path("~/.config/reviewbot").expanduser()
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 
-RESERVED_KEYS = frozenset("qro123ae")
+RESERVED_KEYS = frozenset("qro123aef")
 NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,15}")
 KEY_PATTERN = re.compile(r"[A-Za-z0-9]")
 MULTIPLEXERS = {"herdr": "Herdr", "rex": "Rex"}
@@ -172,11 +176,43 @@ class Serve:
     hostname: str | None = None
 
 
+OPEN_FILTERS = ("requested", "involves", "all", "stale")
+MINE_FILTERS = ("all", "ready", "needs-action", "stale")
+NOTIFICATION_FILTERS = ("all", "participating", "reviews")
+NOTIFICATION_KINDS = ("pr", "issue")
+MAX_STALE_DAYS = 3650
+FILTERS_TABLE = (
+    "[filters]\n"
+    'open = "requested"          # requested | involves | all | stale\n'
+    'mine = "all"                # all | ready | needs-action | stale\n'
+    'notifications = "all"       # all | participating | reviews\n'
+    'notification_kinds = ["pr", "issue"]\n'
+    "stale_days = 14\n"
+)
+
+
+@dataclass(frozen=True)
+class Filters:
+    """What each view shows inside the watched repositories, as set in `[filters]`.
+
+    `open` narrows the Open PRs tab, `mine` the My PRs tab, and `notifications` the
+    Notifications tab, which shows only `notification_kinds`. `stale` means no activity
+    for `stale_days`. The TUI and dashboard can change a filter for one session.
+    """
+
+    open: str
+    mine: str
+    notifications: str
+    notification_kinds: tuple[str, ...]
+    stale_days: int
+
+
 @dataclass(frozen=True)
 class Config:
     scope: Scope
     work_dir: Path
     multiplexer: str
+    filters: Filters
     herdr_workspace: str | None
     rex_session: str | None = None
     agents: tuple[Agent, ...] = ()
@@ -231,6 +267,13 @@ class Config:
 
 def _expand(value: str, base: Path) -> Path:
     return base / Path(value).expanduser()
+
+
+def _work_dir(raw: dict, base: Path) -> Path:
+    value = raw.get("work_dir", "~/reviewbot-workspaces")
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError("`work_dir` must be a directory path.")
+    return _expand(value, base)
 
 
 def _scope(raw: dict) -> Scope:
@@ -437,31 +480,144 @@ def _node_name(table: dict, bind: str) -> str | None:
     return hostname
 
 
-def load(path: Path | None = None) -> Config:
+def _choice(table: dict, key: str, choices: tuple[str, ...]) -> str:
+    value = table.get(key)
+    if value not in choices:
+        raise ConfigError(
+            f"`[filters]` `{key}` must be one of {', '.join(choices)}"
+            + (f", not `{value}`." if value is not None else "; it is missing.")
+        )
+    return value
+
+
+def _filters(raw: dict) -> Filters:
+    """Parse the required `[filters]` table; every key must be written out."""
+    table = raw.get("filters")
+    if table is None:
+        raise ConfigError(
+            "`[filters]` is missing, and ReviewBot could not add it to the config. It sets "
+            "what each view shows. Add this table:\n\n" + FILTERS_TABLE
+        )
+    if not isinstance(table, dict):
+        raise ConfigError("`[filters]` must be a table.")
+    kinds = table.get("notification_kinds")
+    if (
+        not isinstance(kinds, list) or not kinds
+        or any(kind not in NOTIFICATION_KINDS for kind in kinds)
+    ):
+        raise ConfigError(
+            "`[filters]` `notification_kinds` must list one or more of "
+            f"{', '.join(NOTIFICATION_KINDS)}."
+        )
+    days = table.get("stale_days")
+    if not isinstance(days, int) or isinstance(days, bool) or not 1 <= days <= MAX_STALE_DAYS:
+        raise ConfigError(
+            f"`[filters]` `stale_days` must be a whole number of days from 1 to {MAX_STALE_DAYS}."
+        )
+    return Filters(
+        open=_choice(table, "open", OPEN_FILTERS),
+        mine=_choice(table, "mine", MINE_FILTERS),
+        notifications=_choice(table, "notifications", NOTIFICATION_FILTERS),
+        notification_kinds=tuple(dict.fromkeys(kinds)),
+        stale_days=days,
+    )
+
+
+def _write_filters(path: Path, text: str) -> bool:
+    """Add the `[filters]` table to an otherwise valid config written before it existed.
+
+    It runs only after the rest of the config has loaded, so a broken config is left
+    alone. The table is written into the file, set to what earlier versions showed, so every
+    setting stays visible in the config. The previous file is kept beside it, with
+    `.before-0.5` added to its name.
+
+    A symlinked config is updated at its target. ReviewBot processes take a lock on the
+    config while they do this. Both files are first staged as private temporary files
+    with the permissions the locked config has; only then is the config checked again,
+    and if it is a different file, has other permissions, or no longer holds what was
+    loaded, the staged files are discarded. Otherwise they are
+    moved into place at once. Returns whether the file
+    now differs from `text` (so the caller loads it again from the start), or False if
+    it could not be written.
+    """
+    target = path.resolve()
+    staged: list[str] = []
+    try:
+        with open(target, "rb") as locked:
+            fcntl.flock(locked, fcntl.LOCK_EX)
+            source = os.fstat(locked.fileno())
+            mode = source.st_mode & 0o777
+            backup = _stage(target.with_name(f"{target.name}.before-0.5"), text, mode, staged)
+            updated = _stage(target, add_filters(text), mode, staged)
+            now = os.stat(target)
+            if (
+                (now.st_ino, now.st_dev, now.st_mode) != (source.st_ino, source.st_dev, source.st_mode)
+                or target.read_text(encoding="utf-8") != text
+            ):
+                return True
+            os.replace(backup, target.with_name(f"{target.name}.before-0.5"))
+            os.replace(updated, target)
+    except OSError:
+        return False
+    finally:
+        for leftover in staged:
+            if os.path.exists(leftover):
+                os.unlink(leftover)
+    sys.stderr.write(
+        f"reviewbot: added a [filters] table to {target}, set to show what earlier versions "
+        f"showed (previous file saved as {target.name}.before-0.5)\n"
+    )
+    return True
+
+
+def _stage(path: Path, text: str, mode: int, staged: list[str]) -> str:
+    """Write `text` to a private temporary file beside `path`, ready to move into place."""
+    handle, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    staged.append(temporary)
+    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+        stream.write(text)
+    os.chmod(temporary, mode)
+    return temporary
+
+
+def load(path: Path | None = None, *, _attempts: int = 3) -> Config:
+    """Load and validate the config, adding a missing `[filters]` table to the file first.
+
+    When the table is added, or the file changes while it is being added, the config is
+    loaded again from the start, so every setting comes from the same version of the file.
+    """
     path = path or CONFIG_PATH
     if not path.exists():
         raise ConfigError(f"Config not found at {path}. Run `reviewbot init` to create it.")
     try:
-        with path.open("rb") as config_file:
-            raw = tomllib.load(config_file)
+        text = path.read_text(encoding="utf-8")
+        raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise ConfigError(f"{path}: {error}") from None
     base = path.parent
     scope = _scope(raw)
     multiplexer = _multiplexer(raw)
     agents, groups, combats = _agents(raw, base, multiplexer)
+    checkouts, output, serve = _checkouts(raw, base), _output(raw, base), _serve(raw)
+    work_dir = _work_dir(raw, base)
+    for key in ("herdr_workspace", "rex_session"):
+        if raw.get(key) is not None and not isinstance(raw[key], str):
+            raise ConfigError(f"`{key}` must be a string.")
+    if "filters" not in raw and _attempts > 0 and _write_filters(path, text):
+        return load(path, _attempts=_attempts - 1)
     return Config(
         scope=scope,
-        work_dir=_expand(raw.get("work_dir", "~/reviewbot-workspaces"), base),
+        work_dir=work_dir,
         multiplexer=multiplexer,
+        filters=_filters(raw),
         herdr_workspace=raw.get("herdr_workspace"),
         rex_session=raw.get("rex_session"),
         agents=agents,
         groups=groups,
         combats=combats,
-        checkouts=_checkouts(raw, base),
-        output=_output(raw, base),
-        serve=_serve(raw),
+        checkouts=checkouts,
+        output=output,
+        serve=serve,
         path=path,
     )
 
@@ -488,6 +644,15 @@ def add_multiplexer(text: str, multiplexer: str) -> str:
     if index == len(lines) and lines and not lines[-1].endswith("\n"):
         lines[-1] += "\n"
     return "".join([*lines[:index], entry, *lines[index:]])
+
+
+def add_filters(text: str) -> str:
+    """Append a `[filters]` table set to what earlier versions showed."""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return (
+        text + "\n# What each view shows. See https://github.com/mysticcoders/reviewbot/blob/main/docs/reference/configuration.md#filters\n" + FILTERS_TABLE
+    )
 
 
 def agents_missing_command(raw: dict) -> list[tuple[str, str]]:

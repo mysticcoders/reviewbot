@@ -1,3 +1,4 @@
+from reviewbot.config import Filters
 from reviewbot.github import QueueStatus, ReviewCandidate
 from reviewbot.tui.app import _display_status
 
@@ -15,7 +16,13 @@ def test_display_status_uses_live_herdr_state():
 
 
 
-async def no_notifications(scope):
+FILTERS = Filters(
+    open="requested", mine="all", notifications="all", notification_kinds=("pr", "issue"),
+    stale_days=14,
+)
+
+
+async def no_notifications(*args):
     return []
 
 
@@ -39,20 +46,20 @@ def test_closed_review_tab_frees_the_row_and_refetches(monkeypatch, tmp_path):
     fetches = []
     tabs = {first.key}
 
-    async def review_queue(scope):
+    async def review_queue(*args):
         fetches.append(1)
         return queue[min(len(fetches), len(queue)) - 1]
 
-    async def authored_prs(scope):
+    async def authored_prs(*args):
         return []
 
-    monkeypatch.setattr(tui, "review_queue", review_queue)
-    monkeypatch.setattr(tui, "authored_prs", authored_prs)
+    monkeypatch.setattr(tui, "open_prs", review_queue)
+    monkeypatch.setattr(tui, "my_prs", authored_prs)
     monkeypatch.setattr(tui, "notifications", no_notifications)
     monkeypatch.setattr(tui, "active_review_keys", lambda config, candidates: set(tabs))
     scope = SimpleNamespace(describe=lambda: "acme", label=lambda repo: repo)
     config = SimpleNamespace(
-        scope=scope, launchers=[], agents=[], path=tmp_path, multiplexer_name="rex",
+        scope=scope, filters=FILTERS, launchers=[], agents=[], path=tmp_path, multiplexer_name="rex",
     )
 
     async def scenario():
@@ -86,21 +93,21 @@ def test_ctrl_w_serves_the_board_the_tui_already_fetched(monkeypatch, tmp_path):
 
     first = _candidate(1)
 
-    async def review_queue(scope):
+    async def review_queue(*args):
         return [first]
 
-    async def authored_prs(scope):
+    async def authored_prs(*args):
         return []
 
     opened = []
-    monkeypatch.setattr(tui, "review_queue", review_queue)
-    monkeypatch.setattr(tui, "authored_prs", authored_prs)
+    monkeypatch.setattr(tui, "open_prs", review_queue)
+    monkeypatch.setattr(tui, "my_prs", authored_prs)
     monkeypatch.setattr(tui, "notifications", no_notifications)
     monkeypatch.setattr(tui, "active_review_keys", lambda config, candidates: set())
     monkeypatch.setattr(tui, "open_in_browser", lambda serve, url: opened.append(url))
     scope = SimpleNamespace(describe=lambda: "acme", label=lambda repo: repo)
     config = SimpleNamespace(
-        scope=scope, launchers=[], agents=[], path=tmp_path / "config.toml",
+        scope=scope, filters=FILTERS, launchers=[], agents=[], path=tmp_path / "config.toml",
         multiplexer_name="rex", serve=Serve(port=0, bind="localhost", browser="Chrome"),
     )
 
@@ -147,26 +154,26 @@ def test_notifications_tab_marks_rows_and_marks_read(monkeypatch, tmp_path):
     ]
     marked = []
 
-    async def review_queue(scope):
+    async def review_queue(*args):
         return [first]
 
-    async def authored_prs(scope):
+    async def authored_prs(*args):
         return []
 
-    async def fetch_notes(scope):
+    async def fetch_notes(*args):
         return list(notes)
 
     async def mark(thread_id):
         marked.append(thread_id)
 
-    monkeypatch.setattr(tui, "review_queue", review_queue)
-    monkeypatch.setattr(tui, "authored_prs", authored_prs)
+    monkeypatch.setattr(tui, "open_prs", review_queue)
+    monkeypatch.setattr(tui, "my_prs", authored_prs)
     monkeypatch.setattr(tui, "notifications", fetch_notes)
     monkeypatch.setattr(tui, "mark_notification_read", mark)
     monkeypatch.setattr(tui, "active_review_keys", lambda config, candidates: set())
     scope = SimpleNamespace(describe=lambda: "acme", label=lambda repo: repo)
     config = SimpleNamespace(
-        scope=scope, launchers=[], agents=[], path=tmp_path, multiplexer_name="rex",
+        scope=scope, filters=FILTERS, launchers=[], agents=[], path=tmp_path, multiplexer_name="rex",
     )
 
     async def scenario():
@@ -179,12 +186,12 @@ def test_notifications_tab_marks_rows_and_marks_read(monkeypatch, tmp_path):
             await pilot.pause()
             assert app._notes_table.row_count == 2
             assert app._notes_table.get_cell_at((0, 0)) == "review requested"
-            assert str(app.query_one("#tabs").get_tab(tui.NOTES_TAB).label) == "Notifications (2) [3]"
+            assert str(app.query_one("#tabs").get_tab(tui.NOTES_TAB).label) == "Notifications: all (2) [3]"
             await pilot.press("m")
             await pilot.pause()
             assert marked == ["11"]
             assert [n.id for n in app._notes] == ["12"]
-            assert [n.id for n in app.board.notes] == ["12"]
+            assert [n.id for n in app.board.items("notifications")] == ["12"]
             assert app._table.get_cell_at((0, 2)) == "1"
             await pilot.press("1")
             await pilot.press("m")
@@ -206,23 +213,23 @@ def test_brackets_in_titles_and_errors_are_shown_as_typed(monkeypatch, tmp_path)
 
     wip = replace(_candidate(1), title="[WIP] Fix [red]login[/red]")
 
-    async def review_queue(scope):
+    async def review_queue(*args):
         return [wip]
 
-    async def authored_prs(scope):
+    async def authored_prs(*args):
         return []
 
     def no_helper(*args, **kwargs):
         raise ServeError(f"reviewbot-tsnet is not installed; {INSTALL_HINT}")
 
-    monkeypatch.setattr(tui, "review_queue", review_queue)
-    monkeypatch.setattr(tui, "authored_prs", authored_prs)
+    monkeypatch.setattr(tui, "open_prs", review_queue)
+    monkeypatch.setattr(tui, "my_prs", authored_prs)
     monkeypatch.setattr(tui, "notifications", no_notifications)
     monkeypatch.setattr(tui, "active_review_keys", lambda config, candidates: set())
     monkeypatch.setattr(tui, "Dashboard", no_helper)
     scope = SimpleNamespace(describe=lambda: "acme", label=lambda repo: repo)
     config = SimpleNamespace(
-        scope=scope, launchers=[], agents=[], path=tmp_path / "config.toml",
+        scope=scope, filters=FILTERS, launchers=[], agents=[], path=tmp_path / "config.toml",
         multiplexer_name="rex", serve=Serve(port=0, bind="localhost", browser="Chrome"),
     )
 

@@ -30,6 +30,19 @@ multiplexer = "@MULTIPLEXER@"
 # When omitted, ReviewBot uses the Rex session it runs in ($REX_SESSION).
 # rex_session = "reviews"
 
+# What each view shows inside the watched repositories. Every key is required.
+#   open           Open PRs tab: requested | involves | all | stale
+#   mine           My PRs tab (authored or assigned): all | ready | needs-action | stale
+#   notifications  Notifications tab: all | participating | reviews
+#   stale          no activity for `stale_days`
+# In the TUI, `f` changes the current tab's filter until you quit.
+[filters]
+open = "requested"
+mine = "all"
+notifications = "all"
+notification_kinds = ["pr", "issue"]
+stale_days = 14
+
 # Review agents. Each one becomes a TUI shortcut and an `--agent` name.
 @AGENTS@
 

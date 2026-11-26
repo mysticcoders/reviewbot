@@ -27,14 +27,23 @@ if [ -z "$(git status --porcelain -- $PATHS 2>/dev/null)" ]; then
   exit 0
 fi
 
-# The fingerprint covers tracked changes and the contents of untracked files.
+# The fingerprint is the tree git would record for the checked paths as they are on
+# disk: every file's path and content, untracked and deleted files included. It is
+# built in a throwaway copy of the index, so the real index is never touched.
+scratch_index=$(mktemp "${TMPDIR:-/tmp}/reviewbot-stop-hook.XXXXXX") || exit 0
+real_index=$(git rev-parse --git-path index)
+if [ -f "$real_index" ]; then
+  cp "$real_index" "$scratch_index"
+else
+  rm -f "$scratch_index"
+fi
 # shellcheck disable=SC2086
 fingerprint=$(
-  {
-    git diff HEAD -- $PATHS
-    git ls-files --others --exclude-standard -z -- $PATHS | xargs -0 cat 2>/dev/null
-  } | git hash-object --stdin
+  GIT_INDEX_FILE="$scratch_index" git add -A -- $PATHS >/dev/null 2>&1 &&
+    GIT_INDEX_FILE="$scratch_index" git write-tree 2>/dev/null
 )
+rm -f "$scratch_index"
+[ -n "$fingerprint" ] || fingerprint="unknown-$(date +%s)"
 
 blocks=0
 if [ -f "$state" ]; then

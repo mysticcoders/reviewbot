@@ -72,3 +72,5 @@ just sync        # install the dependencies
 just check       # lint, then run the unit tests
 just test-live   # the live Rex test; run it inside a Rex session
 ```
+
+CI runs the same lint and tests (`just check`) on every pull request, on Python 3.11 and 3.15. Changes go in through pull requests: `main` is what `uv tool install` installs, so every push to it is a release.
